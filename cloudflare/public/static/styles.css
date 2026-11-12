@@ -250,6 +250,37 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .pfoot{margin-top:auto}
 .pfoot .btn{width:100%;justify-content:center}
 
+/* ---------- Prospecção: mini-mapa dos resultados ---------- */
+.prospec-mapa .hd{flex-wrap:wrap}
+.pm-leg{display:inline-flex;align-items:center;gap:4px;margin-left:8px}
+.pm-leg i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.pm-leg i.novo{background:var(--accent)}
+.pm-leg i.base{background:var(--verde)}
+.pmapbox{position:relative;padding:8px}
+#p-mapa{width:100%;height:auto;display:block;max-height:46vh;background:var(--soft);border-radius:8px;touch-action:none}
+#p-mapa circle.pmk{cursor:pointer;stroke:var(--panel);stroke-width:1.4;vector-effect:non-scaling-stroke;transition:r .1s}
+#p-mapa circle.pmk:hover,#p-mapa circle.pmk.hot{stroke:var(--fg);stroke-width:2}
+.pm-empty{position:absolute;inset:8px;display:grid;place-items:center;text-align:center;color:var(--muted);font-size:13px;padding:20px}
+
+/* ---------- Prospecção: histórico de pesquisas ---------- */
+.prospec-hist .hd{flex-wrap:wrap}
+.hist-uf{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);font-weight:600}
+.hist-uf select{padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--soft)}
+.hist-list{display:flex;flex-direction:column;gap:16px}
+.hist-grp{display:flex;flex-direction:column;gap:8px}
+.hist-grp>h4{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
+.hist-grp>h4 .c{font-family:var(--fnum);font-weight:700;color:var(--fg);background:var(--soft);border:1px solid var(--line);border-radius:20px;padding:0 8px;font-size:11px}
+.hist-item{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;background:var(--soft);padding:11px 13px}
+.hist-item .hi-main{flex:1;min-width:180px}
+.hist-item .hi-q{font-weight:600;font-size:13.5px}
+.hist-item .hi-q .hi-uf{font-family:var(--fnum);font-size:10.5px;font-weight:700;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 5px;margin-right:6px}
+.hist-item .hi-sub{font-size:11.5px;color:var(--muted);margin-top:3px}
+.hist-item .hi-stats{display:flex;gap:7px;flex-wrap:wrap}
+.hist-item .hi-pill{font-size:11px;font-weight:600;border-radius:20px;padding:2px 9px;background:var(--panel);border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.hist-item .hi-pill.novo{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,transparent)}
+.hist-item .hi-acts{display:flex;gap:6px;flex-wrap:wrap}
+.hist-item .hi-acts .btn{height:30px;font-size:12px;padding:0 11px}
+
 /* ---------- Toast ---------- */
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(10px);background:var(--brand);color:#fff;
   padding:11px 20px;border-radius:9px;box-shadow:var(--shadow);font-size:13.5px;font-weight:500;z-index:80;

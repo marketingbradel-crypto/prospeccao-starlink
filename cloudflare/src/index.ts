@@ -823,6 +823,53 @@ async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promi
   return "criado";
 }
 
+// --------------------------------------------------------------------------
+// Historico automatico de pesquisas (tabela `pesquisas`)
+// Cada busca manual e salva/atualizada; permite consultar, repesquisar ou
+// excluir buscas anteriores sem refazer a consulta. Dedup por `chave`.
+// --------------------------------------------------------------------------
+let pesquisasPronta = false; // garante a tabela uma vez por isolate (resiliente a migracao nao aplicada)
+async function ensurePesquisas(db: D1Database): Promise<void> {
+  if (pesquisasPronta) return;
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS pesquisas (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       uf TEXT, cidade TEXT, microrregiao TEXT, termo TEXT, text_query TEXT,
+       chave TEXT UNIQUE, total INTEGER DEFAULT 0, novos INTEGER DEFAULT 0, excluidos INTEGER DEFAULT 0,
+       resultados TEXT, criado_em TEXT, atualizado_em TEXT)`
+  ).run();
+  pesquisasPronta = true;
+}
+
+// Chave de deduplicacao: mesma regiao + termo => mesma pesquisa (atualiza, nao duplica).
+function chavePesquisa(uf: string, cidade: string, mr: string, termo: string): string {
+  return [L.norm(uf), L.norm(cidade), L.norm(mr), L.norm(termo)].join("|");
+}
+
+// Upsert da pesquisa pela chave. Retorna o id (novo ou existente atualizado).
+async function salvarPesquisa(
+  db: D1Database,
+  p: { uf: string; cidade: string; mr: string; termo: string; textQuery: string;
+       total: number; novos: number; excluidos: number; resultados: any[] }
+): Promise<number | null> {
+  await ensurePesquisas(db);
+  const chave = chavePesquisa(p.uf, p.cidade, p.mr, p.termo);
+  const now = agora();
+  const json = JSON.stringify(p.resultados);
+  await db.prepare(
+    `INSERT INTO pesquisas (uf,cidade,microrregiao,termo,text_query,chave,total,novos,excluidos,resultados,criado_em,atualizado_em)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(chave) DO UPDATE SET
+       text_query=excluded.text_query, total=excluded.total, novos=excluded.novos,
+       excluidos=excluded.excluidos, resultados=excluded.resultados, atualizado_em=excluded.atualizado_em`
+  ).bind(
+    p.uf, p.cidade, p.mr, p.termo, p.textQuery, chave,
+    p.total, p.novos, p.excluidos, json, now, now
+  ).run();
+  const row = await db.prepare("SELECT id FROM pesquisas WHERE chave=?").bind(chave).first<Row>();
+  return row ? (row.id as number) : null;
+}
+
 // GET /api/busca-places?termo=&uf=&cidade=&microrregiao=
 // Busca manual: consulta a fonte (Serper ou Places), exclui grandes redes e marca o que ja esta na base.
 app.get("/api/busca-places", async (c) => {
@@ -850,10 +897,63 @@ app.get("/api/busca-places", async (c) => {
     if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
     // Se o usuario filtrou por UF, mantem apenas resultados daquela UF (quando identificavel).
     if (uf && cand.uf && cand.uf !== uf) continue;
+    // Endereco curto do Serper as vezes nao traz cidade/UF: completa com o contexto da busca.
+    if (!cand.cidade && cidade) cand.cidade = cidade;
+    if (!cand.uf && uf) cand.uf = uf;
     const dup = achaDup(idx, cand.nome, cand.cidade, cand.telefone);
     resultados.push({ ...cand, ja_salvo: dup !== null, empresa_id: dup });
   }
-  return c.json({ textQuery, total: resultados.length, excluidos, resultados });
+
+  // Salva/atualiza no historico de pesquisas (dedup por regiao+termo).
+  let pesquisaId: number | null = null;
+  try {
+    const novos = resultados.filter((r) => !r.ja_salvo).length;
+    pesquisaId = await salvarPesquisa(c.env.DB, {
+      uf, cidade, mr, termo, textQuery,
+      total: resultados.length, novos, excluidos, resultados,
+    });
+  } catch (ex) {
+    console.log("Falha ao salvar historico de pesquisa:", ex);
+  }
+
+  return c.json({ textQuery, total: resultados.length, excluidos, resultados, pesquisa_id: pesquisaId });
+});
+
+// GET /api/prospeccao/pesquisas?uf=  — lista o historico (metadados, sem o JSON pesado).
+app.get("/api/prospeccao/pesquisas", async (c) => {
+  await ensurePesquisas(c.env.DB);
+  const uf = (limpar(c.req.query("uf")) || "").toString().toUpperCase();
+  const where = uf ? " WHERE uf=?" : "";
+  const sql =
+    `SELECT id,uf,cidade,microrregiao,termo,text_query,total,novos,excluidos,criado_em,atualizado_em
+     FROM pesquisas${where} ORDER BY atualizado_em DESC, id DESC`;
+  const stmt = uf ? c.env.DB.prepare(sql).bind(uf) : c.env.DB.prepare(sql);
+  const { results } = await stmt.all<Row>();
+  return c.json(results ?? []);
+});
+
+// GET /api/prospeccao/pesquisas/:id — uma pesquisa com os resultados; remarca `ja_salvo` conforme a base atual.
+app.get("/api/prospeccao/pesquisas/:id{[0-9]+}", async (c) => {
+  await ensurePesquisas(c.env.DB);
+  const id = Number(c.req.param("id"));
+  const row = await c.env.DB.prepare("SELECT * FROM pesquisas WHERE id=?").bind(id).first<Row>();
+  if (!row) return c.notFound();
+  let resultados: any[] = [];
+  try { resultados = JSON.parse((row.resultados as string) || "[]"); } catch { resultados = []; }
+  // Reavalia o que ja esta na base agora (pode ter sido salvo/excluido depois da busca).
+  const idx = await baseIndex(c.env.DB);
+  resultados = resultados.map((cand) => {
+    const dup = achaDup(idx, cand.nome || "", cand.cidade || "", cand.telefone || "");
+    return { ...cand, ja_salvo: dup !== null, empresa_id: dup };
+  });
+  return c.json({ ...row, resultados });
+});
+
+// DELETE /api/prospeccao/pesquisas/:id — remove uma pesquisa do historico.
+app.delete("/api/prospeccao/pesquisas/:id{[0-9]+}", async (c) => {
+  await ensurePesquisas(c.env.DB);
+  await c.env.DB.prepare("DELETE FROM pesquisas WHERE id=?").bind(Number(c.req.param("id"))).run();
+  return c.json({ ok: true });
 });
 
 // POST /api/prospeccao/salvar  { candidatos: [ {nome, endereco, cidade, uf, telefone, whatsapp, site, fonte, lat, lng} ] }
@@ -878,7 +978,7 @@ app.post("/api/prospeccao/salvar", async (c) => {
 // por isso cada execucao processa um LOTE de cidades e avanca um cursor salvo
 // na tabela meta. Em alguns dias cobre toda a regiao e recomeca.
 // --------------------------------------------------------------------------
-const CRON_BATCH = 25;                                  // cidades por execucao
+const CRON_BATCH = 10;                                  // cidades por execucao (econômico p/ cota grátis Serper; ~300/mês)
 const CRON_TERMOS = ["Starlink internet via satélite"]; // termos por cidade (1 = mais barato)
 
 async function metaGet(db: D1Database, chave: string): Promise<string | null> {
@@ -932,6 +1032,9 @@ async function runCron(env: Env): Promise<Row> {
         if (!cand.nome) continue;
         if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
         if (alvo.uf && cand.uf && cand.uf !== alvo.uf) continue;
+        // Endereco curto do Serper as vezes nao traz cidade/UF: usa a cidade-alvo da varredura.
+        if (!cand.cidade) cand.cidade = alvo.municipio;
+        if (!cand.uf) cand.uf = alvo.uf;
         cand.auto = true;
         const r = await salvarCandidato(db, idx, cand);
         if (r === "criado") criados += 1; else duplicados += 1;

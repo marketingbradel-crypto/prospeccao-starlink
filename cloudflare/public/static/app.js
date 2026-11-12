@@ -14,6 +14,8 @@ const App = (() => {
   let buscaTimer = null;
   let PROSPEC = [];        // resultados atuais da busca de prospecção (Google Places)
   let prospecReady = false; // filtros da aba Prospecção já montados?
+  let HIST = [];           // histórico de pesquisas (metadados), por região
+  let curPesquisa = null;  // id da pesquisa atualmente exibida nos resultados
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -535,10 +537,14 @@ const App = (() => {
 
   // ==================== PROSPECÇÃO (busca Google Places) ====================
   function initProspec() {
-    if (prospecReady) return;
-    $("p-uf").innerHTML = selOpts(B.ufs, "Todos os estados");
-    prospecReady = true;
-    carregarCronStatus();
+    if (!prospecReady) {
+      $("p-uf").innerHTML = selOpts(B.ufs, "Todos os estados");
+      $("p-hist-uf").innerHTML = `<option value="">Todas</option>` +
+        B.ufs.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
+      prospecReady = true;
+      carregarCronStatus();
+    }
+    carregarHist();
   }
 
   async function carregarCronStatus() {
@@ -622,13 +628,16 @@ const App = (() => {
         return;
       }
       PROSPEC = js.resultados || [];
+      curPesquisa = js.pesquisa_id || null;
       renderProspecResults(js);
+      carregarHist();
     } finally {
       btn.disabled = false; btn.textContent = "Buscar";
     }
   }
 
   function renderProspecResults(js) {
+    renderMiniMapa();
     $("p-title").textContent = `Resultados (${PROSPEC.length})`;
     const novos = PROSPEC.filter(x => !x.ja_salvo).length;
     const info = [];
@@ -658,7 +667,7 @@ const App = (() => {
       ? `<button class="btn" disabled style="background:var(--soft);color:var(--muted)">✓ Já está na base</button>`
       : `<button class="btn primary" id="psave-${i}" onclick="App.salvarProspec(${i})">+ Salvar na base</button>`;
     return `
-      <div class="pcard${x.ja_salvo ? " saved" : ""}">
+      <div class="pcard${x.ja_salvo ? " saved" : ""}" id="pcard-${i}">
         <div class="ph">
           <div class="pt">
             <b>${esc(x.nome)}</b>
@@ -708,6 +717,151 @@ const App = (() => {
     toast(`${js.criados} nova(s) salva(s)${js.duplicados ? ` · ${js.duplicados} já existia(m)` : ""}.`);
     renderProspecResults();
     recarregar();
+  }
+
+  // ==================== PROSPECÇÃO: mini-mapa dos resultados ====================
+  // Plota as lojas encontradas (lat/lng) num scatter geográfico que se ajusta
+  // aos pontos. Verde = já na base; azul (accent) = novo. Clique → rola até o card.
+  function renderMiniMapa() {
+    const wrap = $("p-mapwrap"), svg = $("p-mapa"), vazio = $("p-map-empty");
+    if (!wrap || !svg) return;
+    if (!PROSPEC.length) { wrap.style.display = "none"; return; }
+    wrap.style.display = "";
+    const pts = PROSPEC
+      .map((x, i) => ({ x, i, la: parseFloat(x.lat), ln: parseFloat(x.lng) }))
+      .filter(o => isFinite(o.la) && isFinite(o.ln));
+    if (!pts.length) { svg.innerHTML = ""; vazio.style.display = ""; return; }
+    vazio.style.display = "none";
+
+    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    pts.forEach(o => {
+      if (o.ln < minLng) minLng = o.ln; if (o.ln > maxLng) maxLng = o.ln;
+      if (o.la < minLat) minLat = o.la; if (o.la > maxLat) maxLat = o.la;
+    });
+    const W = 900, H = 420, pad = 36;
+    const meanLat = (minLat + maxLat) / 2;
+    const kx = Math.cos(meanLat * Math.PI / 180) || 1;          // corrige aspecto lng↔lat
+    const spanLng = Math.max(maxLng - minLng, 0.02), spanLat = Math.max(maxLat - minLat, 0.02);
+    const geoW = spanLng * kx, geoH = spanLat;
+    const scale = Math.min((W - 2 * pad) / geoW, (H - 2 * pad) / geoH);
+    const offX = (W - geoW * scale) / 2, offY = (H - geoH * scale) / 2;
+    const proj = (ln, la) => [offX + (ln - minLng) * kx * scale, offY + (maxLat - la) * scale];
+
+    const circles = pts.map(o => {
+      const [cx, cy] = proj(o.ln, o.la);
+      const fill = o.x.ja_salvo ? "var(--verde)" : "var(--accent)";
+      return `<circle class="pmk" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="7" style="fill:${fill}" data-i="${o.i}"></circle>`;
+    }).join("");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = `<g>${circles}</g>`;
+    svg.querySelectorAll("circle.pmk").forEach(cir => {
+      cir.addEventListener("mousemove", miniTip);
+      cir.addEventListener("mouseleave", hideTip);
+      cir.addEventListener("click", () => irParaCard(+cir.dataset.i));
+    });
+  }
+
+  function miniTip(e) {
+    const x = PROSPEC[+e.target.dataset.i]; if (!x) return;
+    const loc = [x.cidade, x.uf].filter(Boolean).join(" · ");
+    const tag = x.ja_salvo
+      ? `<span style="color:var(--verde)">● já na base</span>`
+      : `<span style="color:var(--accent)">● novo</span>`;
+    showTip(e, `<strong>${esc(x.nome)}</strong>${loc ? `<div class="r"><span>${esc(loc)}</span></div>` : ""}<div class="r">${tag}</div>`);
+  }
+
+  function irParaCard(i) {
+    const el = $("pcard-" + i);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.style.boxShadow = "0 0 0 2px var(--accent)";
+    setTimeout(() => { el.style.boxShadow = ""; }, 1300);
+  }
+
+  // ==================== PROSPECÇÃO: histórico de pesquisas ====================
+  function formatarData(s) {
+    const m = String(s || "").match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : (s || "");
+  }
+
+  async function carregarHist() {
+    try { HIST = await (await fetch("/api/prospeccao/pesquisas")).json(); }
+    catch (e) { HIST = []; }
+    if (!Array.isArray(HIST)) HIST = [];
+    renderHist();
+  }
+
+  function renderHist() {
+    const el = $("p-hist"); if (!el) return;
+    const filtro = ($("p-hist-uf") && $("p-hist-uf").value) || "";
+    const list = filtro ? HIST.filter(h => (h.uf || "").toUpperCase() === filtro) : HIST;
+    if (!list.length) {
+      el.innerHTML = `<div class="empty">${HIST.length ? "Nenhuma pesquisa nesta região." : "As pesquisas realizadas aparecerão aqui."}</div>`;
+      return;
+    }
+    const grupos = {};
+    list.forEach(h => { const u = (h.uf || "").toUpperCase() || "—"; (grupos[u] = grupos[u] || []).push(h); });
+    const ordem = [...B.ufs.filter(u => grupos[u]), ...Object.keys(grupos).filter(u => !B.ufs.includes(u))];
+    el.innerHTML = ordem.map(u => {
+      const items = grupos[u];
+      const nome = (B.uf_nomes && B.uf_nomes[u]) || "";
+      const titulo = u === "—" ? "Sem estado" : (nome && nome !== u ? `${u} · ${nome}` : u);
+      return `<div class="hist-grp"><h4>${esc(titulo)}<span class="c">${items.length}</span></h4>${items.map(histItem).join("")}</div>`;
+    }).join("");
+  }
+
+  function histItem(h) {
+    const titulo = h.termo || h.text_query || "(busca geral)";
+    const loc = [h.cidade, h.microrregiao].filter(Boolean).join(" · ");
+    const sub = [loc, formatarData(h.atualizado_em)].filter(Boolean).join(" · ");
+    return `
+      <div class="hist-item">
+        <div class="hi-main">
+          <div class="hi-q">${h.uf ? `<span class="hi-uf">${esc(h.uf)}</span>` : ""}${esc(titulo)}</div>
+          <div class="hi-sub">${esc(sub)}</div>
+        </div>
+        <div class="hi-stats">
+          <span class="hi-pill">${h.total || 0} resultado(s)</span>
+          ${h.novos ? `<span class="hi-pill novo">${h.novos} novo(s)</span>` : ""}
+        </div>
+        <div class="hi-acts">
+          <button class="btn" style="background:var(--panel)" onclick="App.abrirPesquisa(${h.id})">Consultar</button>
+          <button class="btn" style="background:var(--panel)" onclick="App.repesquisar(${h.id})">Pesquisar de novo</button>
+          <button class="btn ghost danger" onclick="App.excluirPesquisa(${h.id})">Excluir</button>
+        </div>
+      </div>`;
+  }
+
+  // Consulta uma pesquisa anterior sem refazer a busca (carrega os resultados salvos).
+  async function abrirPesquisa(id) {
+    let p;
+    try { p = await (await fetch("/api/prospeccao/pesquisas/" + id)).json(); }
+    catch (e) { toast("Falha ao carregar a pesquisa."); return; }
+    if (!p || p.erro) { toast("Pesquisa não encontrada."); return; }
+    PROSPEC = p.resultados || [];
+    curPesquisa = id;
+    $("p-info").textContent = `Pesquisa salva em ${formatarData(p.atualizado_em)}`;
+    renderProspecResults();
+    $("p-mapwrap").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Refaz a busca com os mesmos parâmetros (atualiza o registro no histórico).
+  async function repesquisar(id) {
+    const h = HIST.find(x => x.id === id); if (!h) return;
+    $("p-termo").value = h.termo || "";
+    $("p-uf").value = h.uf || "";
+    await pUfMudou();
+    $("p-cidade").value = h.cidade || "";
+    $("p-mr").value = h.microrregiao || "";   // opção inexistente vira no-op (select fica em "Todas")
+    buscarProspec();
+  }
+
+  async function excluirPesquisa(id) {
+    if (!confirm("Excluir esta pesquisa do histórico? Os lojistas já salvos na base não são afetados.")) return;
+    await fetch("/api/prospeccao/pesquisas/" + id, { method: "DELETE" });
+    if (curPesquisa === id) curPesquisa = null;
+    toast("Pesquisa excluída do histórico.");
+    carregarHist();
   }
 
   // ==================== DRAWER: ficha / cadastro ====================
@@ -944,6 +1098,7 @@ const App = (() => {
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, buscarProspec, salvarProspec, salvarTodosProspec,
     varreduraAgora,
+    renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
   };
 })();
 

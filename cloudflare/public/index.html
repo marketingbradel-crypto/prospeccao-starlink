@@ -136,6 +136,18 @@
       </div>
     </section>
 
+    <!-- Mini-mapa dos resultados (plota as lojas encontradas por lat/lng) -->
+    <section class="card prospec-mapa" id="p-mapwrap" style="display:none">
+      <div class="hd">
+        <h2>Mapa dos resultados</h2>
+        <span class="map-ctx" id="p-map-ctx">Lojas encontradas nesta busca · <span class="pm-leg"><i class="novo"></i> novo</span> <span class="pm-leg"><i class="base"></i> já na base</span></span>
+      </div>
+      <div class="pmapbox">
+        <svg id="p-mapa" role="img" aria-label="Mapa dos resultados da prospecção"></svg>
+        <div class="pm-empty" id="p-map-empty" style="display:none">Os resultados desta busca não têm coordenadas para plotar no mapa.</div>
+      </div>
+    </section>
+
     <section class="card prospec-results">
       <div class="hd">
         <h2 id="p-title">Resultados</h2>
@@ -145,6 +157,22 @@
       <div class="bd">
         <div id="p-lista" class="prospec-list">
           <div class="empty">Faça uma busca para encontrar empresas e vendedores Starlink na região.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Histórico automático de pesquisas (persistente, por região) -->
+    <section class="card prospec-hist">
+      <div class="hd">
+        <h2>Histórico de pesquisas</h2>
+        <span class="map-ctx">Cada busca é salva automaticamente · consulte, pesquise de novo ou exclua sem refazer a consulta</span>
+        <label class="hist-uf"><span>Região</span>
+          <select id="p-hist-uf" onchange="App.renderHist()"><option value="">Todas</option></select>
+        </label>
+      </div>
+      <div class="bd">
+        <div id="p-hist" class="hist-list">
+          <div class="empty">As pesquisas realizadas aparecerão aqui.</div>
         </div>
       </div>
     </section>
