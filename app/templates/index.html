@@ -69,8 +69,15 @@
         <h2>Mapa de prospecção</h2>
         <span class="map-ctx" id="map-ctx">Concentração de empresas por microrregião · marcadores = empresas por status</span>
       </div>
-      <div class="mapbox">
+      <div class="mapbox" id="mapbox">
         <svg id="mapa" role="img" aria-label="Mapa de prospecção dos parceiros Starlink"></svg>
+        <div class="mapctl" id="mapctl" role="group" aria-label="Controles do mapa">
+          <button class="mapbtn" id="mz-in" type="button" title="Aproximar" aria-label="Aproximar">+</button>
+          <button class="mapbtn" id="mz-out" type="button" title="Afastar" aria-label="Afastar">−</button>
+          <button class="mapbtn" id="mz-home" type="button" title="Centralizar e voltar à visão inicial" aria-label="Centralizar e voltar à visão inicial">⌂</button>
+          <button class="mapbtn" id="mz-fit" type="button" title="Enquadrar todos os pontos" aria-label="Enquadrar todos os pontos">⤢</button>
+          <button class="mapbtn" id="mz-full" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button>
+        </div>
       </div>
       <div class="heatscale" aria-hidden="true">
         <span class="lbl">Menor potencial</span>

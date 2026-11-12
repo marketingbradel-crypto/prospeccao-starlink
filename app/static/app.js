@@ -146,6 +146,168 @@ const App = (() => {
     ).join("");
   }
 
+  // ==================== NAVEGAÇÃO DO MAPA (pan / zoom) ====================
+  // Controla zoom e deslocamento aplicando um transform ao grupo <g id="mapg">
+  // dentro do SVG. O viewBox permanece fixo (= dimensões base), então as
+  // coordenadas dos cliques, tooltips e drill-down continuam idênticas.
+  const PZ = {
+    svg: null, g: null, scale: 1, tx: 0, ty: 0, min: 1, max: 16,
+    vb: { x: 0, y: 0, w: 0, h: 0 },
+    pointers: new Map(), last: null, pinchDist: 0, moved: 0, wired: false, raf: 0,
+
+    // (Re)conecta o controlador ao SVG após cada render. Reseta para a visão inicial.
+    init(svg) {
+      this.svg = svg;
+      this.g = svg.querySelector("#mapg");
+      const vb = (svg.getAttribute("viewBox") || "0 0 100 100").split(/[\s,]+/).map(Number);
+      this.vb = { x: vb[0] || 0, y: vb[1] || 0, w: vb[2] || 100, h: vb[3] || 100 };
+      this.scale = 1; this.tx = 0; this.ty = 0;
+      this.pointers.clear(); this.last = null;
+      this.apply();
+      if (!this.wired) this.wire();
+    },
+
+    apply() {
+      if (!this.g) return;
+      this.g.setAttribute("transform", `translate(${this.tx.toFixed(2)} ${this.ty.toFixed(2)}) scale(${this.scale})`);
+      this.svg.style.setProperty("--z", this.scale);
+    },
+
+    clamp() {
+      const minTx = this.vb.x + this.vb.w * (1 - this.scale);
+      const minTy = this.vb.y + this.vb.h * (1 - this.scale);
+      this.tx = Math.min(this.vb.x, Math.max(minTx, this.tx));
+      this.ty = Math.min(this.vb.y, Math.max(minTy, this.ty));
+    },
+
+    // Converte coordenada de tela (clientX/Y) para o espaço do viewBox.
+    toUser(cx, cy) {
+      const m = this.svg.getScreenCTM();
+      if (!m) return { x: 0, y: 0, k: 1 };
+      const p = new DOMPoint(cx, cy).matrixTransform(m.inverse());
+      return { x: p.x, y: p.y, k: m.a };
+    },
+
+    // Zoom mantendo fixo o ponto sob o cursor (clientX/Y de tela).
+    zoomAt(factor, cx, cy) {
+      const s2 = Math.min(this.max, Math.max(this.min, this.scale * factor));
+      if (Math.abs(s2 - this.scale) < 1e-4) return;
+      const u = this.toUser(cx, cy);
+      const r = s2 / this.scale;
+      this.tx = u.x - (u.x - this.tx) * r;
+      this.ty = u.y - (u.y - this.ty) * r;
+      this.scale = s2;
+      this.clamp(); this.apply();
+    },
+
+    // Zoom pelos botões: aproxima/afasta a partir do centro do mapa.
+    btnZoom(factor) {
+      const r = this.svg.getBoundingClientRect();
+      this.zoomAt(factor, r.left + r.width / 2, r.top + r.height / 2);
+    },
+
+    panBy(dxUser, dyUser) {
+      this.tx += dxUser; this.ty += dyUser;
+      this.clamp(); this.apply();
+    },
+
+    // Volta à visão inicial (enquadra todo o mapa).
+    home() { this.scale = 1; this.tx = 0; this.ty = 0; this.apply(); },
+
+    // Enquadra todos os marcadores cadastrados; sem marcadores, volta à visão inicial.
+    fit() {
+      const cs = this.g ? this.g.querySelectorAll("circle.mk") : [];
+      if (!cs.length) { this.home(); return; }
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      cs.forEach(c => {
+        const x = +c.getAttribute("cx"), y = +c.getAttribute("cy");
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      });
+      const pad = Math.max(x1 - x0, y1 - y0) * 0.1 + 12;
+      x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+      const bw = Math.max(1, x1 - x0), bh = Math.max(1, y1 - y0);
+      this.scale = Math.min(this.max, Math.max(this.min, Math.min(this.vb.w / bw, this.vb.h / bh)));
+      const bcx = (x0 + x1) / 2, bcy = (y0 + y1) / 2;
+      this.tx = this.vb.x + this.vb.w / 2 - this.scale * bcx;
+      this.ty = this.vb.y + this.vb.h / 2 - this.scale * bcy;
+      this.clamp(); this.apply();
+    },
+
+    toggleFull() {
+      const el = $("map-card") || document.querySelector(".map-card");
+      if (!el) return;
+      const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fsEl) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); }
+      else { (el.requestFullscreen || el.webkitRequestFullscreen || (() => {})).call(el); }
+    },
+
+    // Liga os eventos uma única vez ao SVG (persistem entre re-renders) e aos botões.
+    wire() {
+      this.wired = true;
+      const svg = this.svg;
+
+      svg.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        this.zoomAt(e.deltaY < 0 ? 1.15 : 1 / 1.15, e.clientX, e.clientY);
+      }, { passive: false });
+
+      svg.addEventListener("pointerdown", (e) => {
+        svg.setPointerCapture(e.pointerId);
+        this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        this.moved = 0;
+        if (this.pointers.size === 1) { this.last = { x: e.clientX, y: e.clientY }; svg.classList.add("panning"); }
+        else if (this.pointers.size === 2) { this.pinchDist = this._dist(); this.last = null; }
+      });
+
+      svg.addEventListener("pointermove", (e) => {
+        if (!this.pointers.has(e.pointerId)) return;
+        this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (this.pointers.size >= 2) {
+          const d = this._dist(); if (!this.pinchDist) this.pinchDist = d;
+          const mid = this._mid();
+          this.zoomAt(d / this.pinchDist, mid.x, mid.y);
+          this.pinchDist = d; this.moved += 10;
+        } else if (this.last) {
+          const u = this.toUser(0, 0), k = u.k || 1; // k = escala tela->user
+          const dx = (e.clientX - this.last.x) / k, dy = (e.clientY - this.last.y) / k;
+          this.moved += Math.abs(e.clientX - this.last.x) + Math.abs(e.clientY - this.last.y);
+          this.last = { x: e.clientX, y: e.clientY };
+          this.panBy(dx, dy);
+        }
+      });
+
+      const up = (e) => {
+        this.pointers.delete(e.pointerId);
+        if (this.pointers.size === 1) { const p = [...this.pointers.values()][0]; this.last = { x: p.x, y: p.y }; this.pinchDist = 0; }
+        if (this.pointers.size === 0) { this.last = null; this.pinchDist = 0; svg.classList.remove("panning"); }
+      };
+      svg.addEventListener("pointerup", up);
+      svg.addEventListener("pointercancel", up);
+
+      // Bloqueia o "click" que o navegador dispara ao final de um arraste (evita
+      // selecionar região / abrir ficha sem querer depois de um pan).
+      svg.addEventListener("click", (e) => {
+        if (this.moved > 6) { e.stopPropagation(); e.preventDefault(); this.moved = 0; }
+      }, true);
+
+      const on = (id, fn) => { const b = $(id); if (b) b.addEventListener("click", fn); };
+      on("mz-in", () => this.btnZoom(1.4));
+      on("mz-out", () => this.btnZoom(1 / 1.4));
+      on("mz-home", () => this.home());
+      on("mz-fit", () => this.fit());
+      on("mz-full", () => this.toggleFull());
+    },
+
+    _dist() {
+      const p = [...this.pointers.values()];
+      return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
+    },
+    _mid() {
+      const p = [...this.pointers.values()];
+      return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2 };
+    },
+  };
+
   // ==================== MAPA ====================
   function heatLevel(c, max) {
     if (!c) return 0;
@@ -222,8 +384,9 @@ const App = (() => {
     const svg = $("mapa");
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.classList.toggle("dim", !!sel);
-    svg.innerHTML = paths + outlines + labels + marks;
+    svg.innerHTML = `<g id="mapg">${paths + outlines + labels + marks}</g>`;
     wireMapa(svg);
+    PZ.init(svg);
   }
 
   // Detalhe de um estado: microrregiões com heatmap quente (escala relativa ao
@@ -244,13 +407,14 @@ const App = (() => {
       let lx = r.lx, ly = r.ly;
       if (lx == null || ly == null) { const ct = pathCentroid(r.d); lx = ct[0]; ly = ct[1]; }
       lx = (+lx).toFixed(1); ly = (+ly).toFixed(1);
-      labels += `<text class="rg-lbl" x="${lx}" y="${ly}">${esc(r.n)}<tspan class="v" x="${lx}" dy="13">${c}</tspan></text>`;
+      labels += `<text class="rg-lbl" x="${lx}" y="${ly}">${esc(r.n)}<tspan class="v" x="${lx}" dy="1.05em">${c}</tspan></text>`;
     }
     const svg = $("mapa");
     svg.setAttribute("viewBox", `0 0 ${g.w} ${g.h}`);
     svg.classList.toggle("dim", !!sel);
-    svg.innerHTML = paths + munis + labels;
+    svg.innerHTML = `<g id="mapg">${paths + munis + labels}</g>`;
     wireMapa(svg);
+    PZ.init(svg);
   }
 
   function regiaoTip(e) {
