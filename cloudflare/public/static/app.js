@@ -4,6 +4,7 @@
 const App = (() => {
   let B = null;            // bootstrap (listas, cores, mapa)
   let OUTLINES = {};       // contornos (uniao das microrregioes) por UF
+  let GEOUF = {};          // geometria por estado (municipios + microrregioes), cache /api/geo/:uf
   let MAP = null;          // dados do mapa (/api/mapa)
   let DASH = null;         // dados do painel (/api/dashboard)
   let EMPRESAS = [];       // lista atual filtrada
@@ -117,11 +118,15 @@ const App = (() => {
 
   async function recarregar() {
     const q = qs();
-    const [emp, mp, dsh] = await Promise.all([
+    const uf = $("f-uf").value;
+    const tasks = [
       fetch("/api/empresas?" + q).then(r => r.json()),
       fetch("/api/mapa?" + q).then(r => r.json()),
       fetch("/api/dashboard").then(r => r.json()),
-    ]);
+    ];
+    // Carrega (uma vez) a geometria do estado filtrado para o mapa de detalhe.
+    if (uf && !GEOUF[uf]) tasks.push(fetch("/api/geo/" + encodeURIComponent(uf)).then(r => r.json()).then(g => { GEOUF[uf] = g; }));
+    const [emp, mp, dsh] = await Promise.all(tasks);
     EMPRESAS = emp; MAP = mp; DASH = dsh;
     renderKPIs(); renderMapa(); renderLista(); renderRanking();
     if (!$("view-painel").classList.contains("hidden")) renderPainel();
@@ -150,13 +155,48 @@ const App = (() => {
     return Math.min(6, Math.max(1, Math.round(c / max * 6)));
   }
 
+  // Despacho: sem estado filtrado -> visão geral dos 4 estados; com um estado
+  // filtrado -> "desce" para o mapa só daquele estado (microrregiões + municípios).
   function renderMapa() {
+    const uf = $("f-uf").value;
+    if (uf && GEOUF[uf]) renderMapaEstado(uf);
+    else renderMapaOverview();
+  }
+
+  // Centroide poligonal a partir do atributo "d" (comandos M/L absolutos).
+  function pathCentroid(d) {
+    const nums = (d.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    const pts = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
+    const n = pts.length;
+    if (!n) return [0, 0];
+    let a = 0, cx = 0, cy = 0;
+    for (let i = 0; i < n; i++) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[(i + 1) % n];
+      const cr = x0 * y1 - x1 * y0; a += cr; cx += (x0 + x1) * cr; cy += (y0 + y1) * cr;
+    }
+    if (Math.abs(a) < 1e-9) return [pts.reduce((s, p) => s + p[0], 0) / n, pts.reduce((s, p) => s + p[1], 0) / n];
+    a *= 0.5; return [cx / (6 * a), cy / (6 * a)];
+  }
+
+  function wireMapa(svg) {
+    svg.querySelectorAll("path.rg").forEach(p => {
+      p.addEventListener("mousemove", regiaoTip);
+      p.addEventListener("mouseleave", hideTip);
+      p.addEventListener("click", () => selecionarRegiao(p.dataset.key, p.dataset.uf, p.dataset.n));
+    });
+    svg.querySelectorAll("circle.mk").forEach(c => {
+      c.addEventListener("mousemove", markerTip);
+      c.addEventListener("mouseleave", hideTip);
+      c.addEventListener("click", () => abrirFicha(+c.dataset.id));
+    });
+  }
+
+  // Visão geral: 4 estados juntos, heatmap quente por microrregião + contornos de UF.
+  function renderMapaOverview() {
     const { w, h } = B.map.dims;
     const regs = B.map.regions, agg = MAP.regioes, max = MAP.max;
     const selUF = sel ? sel.split("|")[0] : null;
-
-    // 1) Microrregiões com heatmap (escuro = maior potencial). Cada microrregião
-    //    mantém sua geometria e limites (borda fina var(--panel)).
     let paths = "";
     for (const r of regs) {
       const key = r.uf + "|" + r.n;
@@ -165,10 +205,6 @@ const App = (() => {
       const on = sel === key ? " sel" : "";
       paths += `<path class="rg heat${lvl}${on}" d="${r.d}" data-key="${esc(key)}" data-uf="${r.uf}" data-n="${esc(r.n)}"></path>`;
     }
-
-    // 2) Contorno de cada estado (PA, MA, TO, GO) desenhado POR CIMA: limite
-    //    territorial oficial de cada UF (state-outlines.json, gerado por
-    //    tools/build_state_outlines.py), destacando a divisão entre os estados.
     const porUF = {};
     for (const r of regs) (porUF[r.uf] = porUF[r.uf] || []).push(r);
     let outlines = "", labels = "";
@@ -181,7 +217,6 @@ const App = (() => {
       const cy = list.reduce((s, r) => s + (r.cy || 0), 0) / list.length;
       labels += `<text class="state-lbl${off}" x="${cx.toFixed(1)}" y="${cy.toFixed(1)}">${uf}</text>`;
     }
-
     let marks = "";
     for (const m of MAP.marcadores) {
       marks += `<circle class="mk" cx="${m.x}" cy="${m.y}" r="5" fill="${m.hex}" data-id="${m.id}"></circle>`;
@@ -190,16 +225,34 @@ const App = (() => {
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.classList.toggle("dim", !!sel);
     svg.innerHTML = paths + outlines + labels + marks;
-    svg.querySelectorAll("path.rg").forEach(p => {
-      p.addEventListener("mousemove", regiaoTip);
-      p.addEventListener("mouseleave", hideTip);
-      p.addEventListener("click", () => selecionarRegiao(p.dataset.key, p.dataset.uf, p.dataset.n));
-    });
-    svg.querySelectorAll("circle.mk").forEach(c => {
-      c.addEventListener("mousemove", markerTip);
-      c.addEventListener("mouseleave", hideTip);
-      c.addEventListener("click", () => abrirFicha(+c.dataset.id));
-    });
+    wireMapa(svg);
+  }
+
+  // Detalhe de um estado: microrregiões com heatmap quente (escala relativa ao
+  // estado), linhas finas dos municípios por dentro e rótulo (nome + nº empresas).
+  function renderMapaEstado(uf) {
+    const g = GEOUF[uf], agg = MAP.regioes;
+    let max = 0;
+    for (const r of g.regioes) { const a = agg[uf + "|" + r.n]; if (a && a.count > max) max = a.count; }
+    let paths = "", munis = "", labels = "";
+    for (const m of g.municipios) munis += `<path class="muni" d="${m.d}"></path>`;
+    for (const r of g.regioes) {
+      const key = uf + "|" + r.n;
+      const a = agg[key];
+      const c = a ? a.count : 0;
+      const lvl = heatLevel(c, max);
+      const on = sel === key ? " sel" : "";
+      paths += `<path class="rg rg-state heat${lvl}${on}" d="${r.d}" data-key="${esc(key)}" data-uf="${uf}" data-n="${esc(r.n)}"></path>`;
+      let lx = r.lx, ly = r.ly;
+      if (lx == null || ly == null) { const ct = pathCentroid(r.d); lx = ct[0]; ly = ct[1]; }
+      lx = (+lx).toFixed(1); ly = (+ly).toFixed(1);
+      labels += `<text class="rg-lbl" x="${lx}" y="${ly}">${esc(r.n)}<tspan class="v" x="${lx}" dy="13">${c}</tspan></text>`;
+    }
+    const svg = $("mapa");
+    svg.setAttribute("viewBox", `0 0 ${g.w} ${g.h}`);
+    svg.classList.toggle("dim", !!sel);
+    svg.innerHTML = paths + munis + labels;
+    wireMapa(svg);
   }
 
   function regiaoTip(e) {

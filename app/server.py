@@ -270,7 +270,7 @@ def geo_uf(uf):
     return jsonify({
         "uf": est["uf"], "nome": est["nome"], "w": est["w"], "h": est["h"],
         "municipios": [{"n": m["n"], "rg": m.get("rg", ""), "d": m["d"]} for m in est["municipios"]],
-        "regioes": [{"n": r["n"], "d": r["d"]} for r in est.get("regioes", [])],
+        "regioes": [{"n": r["n"], "d": r["d"], "lx": r.get("lx"), "ly": r.get("ly")} for r in est.get("regioes", [])],
     })
 
 

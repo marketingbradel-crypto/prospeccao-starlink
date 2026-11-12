@@ -392,7 +392,7 @@ app.get("/api/geo/:uf", (c) => {
   return c.json({
     uf: est.uf, nome: est.nome, w: est.w, h: est.h,
     municipios: est.municipios.map((m) => ({ n: m.n, rg: m.rg ?? "", d: m.d })),
-    regioes: (est.regioes ?? []).map((r) => ({ n: r.n, d: r.d })),
+    regioes: (est.regioes ?? []).map((r) => ({ n: r.n, d: r.d, lx: r.lx, ly: r.ly })),
   });
 });
 

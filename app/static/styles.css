@@ -3,8 +3,9 @@
   --brand:#0a2540; --brand2:#12406e; --accent:#1f6feb; --accent-weak:#e8f0fe;
   --bg:#eef1f6; --panel:#ffffff; --fg:#16202c; --muted:#64748b; --line:#e3e8ef; --soft:#f5f7fa;
   --verde:#2e9e5b; --azul:#2f6fd0; --amarelo:#e8b800; --laranja:#e8811f; --vermelho:#cc3a26; --cinza:#9aa0ac;
-  --heat0:#eef2f7; --heat1:#dbe7fb; --heat2:#bcd3f6; --heat3:#8fb4ee; --heat4:#5f93e4; --heat5:#3573d6; --heat6:#1f4e9c;
+  --heat0:#f1f3f6; --heat1:#ffeda0; --heat2:#fed976; --heat3:#feb24c; --heat4:#fd8d3c; --heat5:#f03b20; --heat6:#bd0026;
   --state-line:#334155; --state-lbl:#0f2238; --state-halo:#ffffff;
+  --muni-line:rgba(120,70,20,.28);
   --shadow:0 1px 3px rgba(10,37,64,.08),0 4px 16px rgba(10,37,64,.06);
   --radius:10px;
   --f:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
@@ -13,8 +14,9 @@
 [data-theme="dark"]{
   --brand:#0b1a2b; --brand2:#12406e; --accent:#5fa0ff; --accent-weak:#16263c;
   --bg:#0e141c; --panel:#161e29; --fg:#e8edf4; --muted:#93a1b5; --line:#263141; --soft:#1b2430;
-  --heat0:#1d2735; --heat1:#1f3350; --heat2:#244470; --heat3:#2d5590; --heat4:#3a6fb8; --heat5:#4f8ad6; --heat6:#6fa6ee;
+  --heat0:#222b38; --heat1:#ffeda0; --heat2:#fed976; --heat3:#feb24c; --heat4:#fd8d3c; --heat5:#f03b20; --heat6:#bd0026;
   --state-line:#8fa6c4; --state-lbl:#dce6f3; --state-halo:#0e141c;
+  --muni-line:rgba(255,220,180,.22);
   --shadow:0 1px 3px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.35);
 }
 *{box-sizing:border-box}
@@ -106,6 +108,12 @@ text.state-lbl{fill:var(--state-lbl);font-family:var(--f);font-weight:800;font-s
   text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:var(--state-halo);stroke-width:4px;stroke-linejoin:round;
   pointer-events:none;opacity:.92;transition:opacity .12s}
 text.state-lbl.off{opacity:.25}
+/* Detalhe de um estado: linhas de municípios + rótulos de microrregião */
+path.muni{fill:none;stroke:var(--muni-line);stroke-width:.5;pointer-events:none}
+path.rg.rg-state{stroke:var(--panel);stroke-width:1.2}
+text.rg-lbl{fill:#1b1205;font-family:var(--f);font-weight:700;font-size:12.5px;text-anchor:middle;
+  paint-order:stroke;stroke:#fff;stroke-width:2.6px;stroke-linejoin:round;pointer-events:none}
+text.rg-lbl tspan.v{font-family:var(--fnum);font-weight:800}
 /* Escala do heatmap */
 .heatscale{display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;padding:6px 14px 2px;color:var(--muted);font-size:11.5px}
 .heatscale i{width:24px;height:11px;display:inline-block;border-radius:2px;border:1px solid var(--line)}

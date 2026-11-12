@@ -10,7 +10,7 @@ interface Region { n: string; uf: string; d: string }
 interface StateGeo {
   uf: string; nome: string; w: number; h: number;
   municipios: { n: string; rg?: string; d: string }[];
-  regioes?: { n: string; d: string }[];
+  regioes?: { n: string; d: string; lx?: number; ly?: number }[];
 }
 interface Geo {
   muni_index: Record<string, MuniEntry>;
