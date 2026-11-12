@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mapa Estratégico de Prospecção · Bradel Starlink</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ===================== TOPBAR ===================== -->
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">B</div>
+    <div class="tt">
+      <b>Mapa Estratégico de Prospecção</b>
+      <span>Bradel · Parceiros Starlink</span>
+    </div>
+  </div>
+
+  <nav class="viewtabs" role="tablist" aria-label="Visão">
+    <button id="tab-mapa" class="on" onclick="App.view('mapa')">Mapa</button>
+    <button id="tab-painel" onclick="App.view('painel')">Dashboard</button>
+  </nav>
+
+  <div class="topactions">
+    <button class="btn primary" onclick="App.novaEmpresa()">+ Novo lojista</button>
+    <button class="btn ghost" onclick="App.abrirImport()">Importar</button>
+    <button class="btn ghost" onclick="App.exportar()">Exportar</button>
+    <button class="btn ghost" onclick="App.modelo()">Modelo</button>
+    <button class="btn icon-btn ghost" title="Alternar tema" onclick="App.tema()">◐</button>
+    <input type="file" id="fileimport" accept=".xlsx,.csv" hidden onchange="App.fazerImport(this)">
+  </div>
+</header>
+
+<!-- ===================== KPIs ===================== -->
+<section class="kpibar" id="kpibar"></section>
+
+<main>
+  <!-- ===================== VISÃO MAPA ===================== -->
+  <div class="view-mapa" id="view-mapa">
+
+    <!-- Coluna esquerda: filtros + ranking -->
+    <aside class="col-left">
+      <div class="card">
+        <div class="hd"><h2>Filtros</h2><button class="lnk" onclick="App.limparFiltros()">limpar</button></div>
+        <div class="bd filters">
+          <label class="fld"><span>Estado</span><select id="f-uf" onchange="App.ufMudou()"></select></label>
+          <label class="fld"><span>Microrregião</span><select id="f-mr"></select></label>
+          <label class="fld"><span>Segmento</span><select id="f-seg"></select></label>
+          <label class="fld"><span>Status comercial</span><select id="f-status"></select></label>
+          <label class="fld"><span>Responsável</span><select id="f-resp"></select></label>
+          <label class="fld"><span>Canal</span><select id="f-canal"></select></label>
+          <label class="chk2"><input type="checkbox" id="f-cred"> Só credenciados</label>
+          <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais</label>
+          <label class="chk2"><input type="checkbox" id="f-tel"> Internet / Telecom</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="hd"><h2>Microrregiões — ranking</h2></div>
+        <div class="bd"><div id="ranking" class="ranking"></div></div>
+      </div>
+    </aside>
+
+    <!-- Centro: mapa -->
+    <section class="card map-card">
+      <div class="hd">
+        <h2>Mapa de prospecção</h2>
+        <span class="map-ctx" id="map-ctx">Concentração de empresas por microrregião · marcadores = empresas por status</span>
+      </div>
+      <div class="mapbox">
+        <svg id="mapa" role="img" aria-label="Mapa de prospecção dos parceiros Starlink"></svg>
+      </div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <!-- Direita: lista -->
+    <aside class="card list-card">
+      <div class="hd"><h2 id="list-title">Empresas</h2></div>
+      <div class="listsearch">
+        <input id="busca" type="search" placeholder="Buscar nome, CNPJ, cidade, responsável…" oninput="App.buscaDebounced()">
+      </div>
+      <div class="lista" id="lista"></div>
+    </aside>
+  </div>
+
+  <!-- ===================== VISÃO DASHBOARD ===================== -->
+  <div class="view-painel hidden" id="view-painel"></div>
+</main>
+
+<!-- ===================== DRAWER (ficha) ===================== -->
+<div class="overlay" id="overlay" onclick="App.fecharDrawer()"></div>
+<aside class="drawer" id="drawer" aria-label="Ficha da empresa"></aside>
+
+<!-- Tooltip do mapa -->
+<div class="tip hidden" id="tip"></div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

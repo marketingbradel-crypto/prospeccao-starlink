@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prospeccao-starlink",
+  "main": "src/index.ts",
+  "account_id": "653bb4dc95bf8c3d4845f9aca64201ba",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prospeccao-starlink",
+      "database_id": "15f81b0c-03fb-4e1d-96a5-2d934ff306d8",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

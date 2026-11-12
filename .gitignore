@@ -1,0 +1,24 @@
+# Credenciais e sessao - NUNCA versionar
+.env
+.vivensis_perfil/
+ACESSO VSM VIVENSIS-STARLINK.txt
+*.senha
+*senha*.txt
+
+# Capturas e saidas da extracao (dados do portal)
+vivensis_capturas/
+vivensis_capturas_auto/
+*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Banco local da plataforma Flask (os dados vao no cloudflare/seed.sql)
+data/*.db
+
+# Node / Cloudflare Worker
+node_modules/
+.wrangler/
+.dev.vars

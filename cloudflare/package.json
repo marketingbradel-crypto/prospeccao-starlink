@@ -1,0 +1,25 @@
+{
+  "name": "prospeccao-starlink-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plataforma de Prospeccao Starlink (Bradel) — Cloudflare Worker + D1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create prospeccao-starlink",
+    "db:migrate:local": "wrangler d1 migrations apply prospeccao-starlink --local",
+    "db:migrate:remote": "wrangler d1 migrations apply prospeccao-starlink --remote",
+    "db:seed:local": "wrangler d1 execute prospeccao-starlink --local --file=./seed.sql",
+    "db:seed:remote": "wrangler d1 execute prospeccao-starlink --remote --file=./seed.sql",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.14",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261110.1",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.0.0"
+  }
+}
