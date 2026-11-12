@@ -3,6 +3,7 @@
 // e expoe a API JSON: CRUD de empresas/filiais/contatos, mapa, dashboard,
 // filtros, pesquisa e import/export Excel.
 import { Hono } from "hono";
+import { basicAuth } from "hono/basic-auth";
 import * as XLSX from "xlsx";
 import * as geo from "./geo";
 import * as L from "./listas";
@@ -10,6 +11,8 @@ import * as L from "./listas";
 interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  APP_USER?: string;   // usuario do login (padrao "bradel")
+  APP_PASSWORD?: string; // senha — definida como secret (wrangler secret put APP_PASSWORD)
 }
 
 // Colunas da empresa (ordem = modelo), portado de db.EMPRESA_CAMPOS.
@@ -214,6 +217,18 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
 // App Hono — somente /api/* (assets servem a SPA)
 // --------------------------------------------------------------------------
 const app = new Hono<{ Bindings: Env }>();
+
+// Login (HTTP Basic) em todas as rotas — protege API e paginas estaticas.
+// Usuario padrao "bradel"; senha vem do secret APP_PASSWORD. Sem senha configurada,
+// bloqueia tudo (fail-closed). Para dev local, defina APP_PASSWORD em .dev.vars.
+app.use("*", (c, next) => {
+  const mw = basicAuth({
+    realm: "Prospeccao Starlink — Bradel",
+    verifyUser: (user, pass) =>
+      !!c.env.APP_PASSWORD && user === (c.env.APP_USER || "bradel") && pass === c.env.APP_PASSWORD,
+  });
+  return mw(c, next);
+});
 
 async function jsonBody(c: any): Promise<Row> {
   try {
@@ -615,5 +630,8 @@ app.post("/api/import", async (c) => {
   }
   return c.json({ criados, atualizados, ignorados, erros });
 });
+
+// Fallback: tudo que nao e /api/* vai para os assets estaticos (SPA), ja autenticado.
+app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default app;
