@@ -3,7 +3,6 @@
 // e expoe a API JSON: CRUD de empresas/filiais/contatos, mapa, dashboard,
 // filtros, pesquisa e import/export Excel.
 import { Hono } from "hono";
-import { basicAuth } from "hono/basic-auth";
 import * as XLSX from "xlsx";
 import * as geo from "./geo";
 import * as L from "./listas";
@@ -216,18 +215,138 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
 // --------------------------------------------------------------------------
 // App Hono — somente /api/* (assets servem a SPA)
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// Autenticacao: tela de login propria (cookie de sessao assinado) + Basic p/ API
+// --------------------------------------------------------------------------
+const COOKIE = "psl_auth";
+const te = new TextEncoder();
+
+function creds(env: Env) {
+  return { user: env.APP_USER || "bradel", pass: env.APP_PASSWORD || "" };
+}
+
+async function tokenFor(env: Env): Promise<string> {
+  const { user, pass } = creds(env);
+  const key = await crypto.subtle.importKey(
+    "raw", te.encode(pass), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, te.encode("psl-auth-v1|" + user));
+  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function getCookie(c: any, name: string): string | null {
+  const raw = c.req.header("Cookie") || "";
+  for (const part of raw.split(/;\s*/)) {
+    const i = part.indexOf("=");
+    if (i > 0 && part.slice(0, i) === name) return part.slice(i + 1);
+  }
+  return null;
+}
+
+function checkBasic(c: any): boolean {
+  const h = c.req.header("Authorization") || "";
+  if (!h.startsWith("Basic ")) return false;
+  let dec = "";
+  try { dec = atob(h.slice(6)); } catch { return false; }
+  const i = dec.indexOf(":");
+  if (i < 0) return false;
+  const { user, pass } = creds(c.env);
+  return !!pass && dec.slice(0, i) === user && dec.slice(i + 1) === pass;
+}
+
+function loginPage(erro = "", user = "bradel"): string {
+  const msg = erro ? `<div class="err">${erro}</div>` : "";
+  return `<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entrar · Prospecção Starlink</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  background:radial-gradient(1200px 800px at 70% -10%,#17324f 0%,#0c1420 55%,#080d16 100%);color:#e8eef6}
+.card{width:min(92vw,360px);background:#111b28;border:1px solid #223247;border-radius:16px;padding:28px 26px 26px;
+  box-shadow:0 20px 60px rgba(0,0,0,.45)}
+.logo{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:22px;color:#fff;
+  background:linear-gradient(135deg,#2f6fd0,#1b3f7a);margin-bottom:14px}
+h1{font-size:19px;margin:0 0 2px}
+.sub{margin:0 0 18px;color:#90a2b8;font-size:13px}
+label{display:block;font-size:12px;color:#aebccd;margin:14px 0 6px}
+input{width:100%;height:42px;padding:0 12px;border-radius:10px;border:1px solid #2b3d54;background:#0c1521;color:#eaf1f9;font-size:15px}
+input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+.pw{position:relative}
+.pw input{padding-right:44px}
+.eye{position:absolute;right:6px;top:5px;height:32px;width:34px;border:0;background:transparent;cursor:pointer;color:#8ea2b8;
+  display:grid;place-items:center;border-radius:8px}
+.eye:hover{color:#dce7f2;background:#1a2636}
+.btn{margin-top:20px;width:100%;height:44px;border:0;border-radius:10px;cursor:pointer;font-size:15px;font-weight:600;color:#fff;
+  background:linear-gradient(135deg,#2f6fd0,#2358a8)}
+.btn:hover{filter:brightness(1.07)}
+.err{background:#3a1720;border:1px solid #7f2d3b;color:#ffb3bf;padding:9px 11px;border-radius:9px;font-size:13px;margin-bottom:4px}
+</style></head><body>
+<form class="card" method="post" action="/login" autocomplete="on">
+  <div class="logo">B</div>
+  <h1>Prospecção Starlink</h1>
+  <p class="sub">Bradel · acesso restrito</p>
+  ${msg}
+  <label for="u">Usuário</label>
+  <input id="u" name="user" value="${user}" autocomplete="username" autocapitalize="none" spellcheck="false">
+  <label for="pw">Senha</label>
+  <div class="pw">
+    <input id="pw" name="pass" type="password" autocomplete="current-password" required>
+    <button type="button" class="eye" id="eye" aria-label="Mostrar senha" aria-pressed="false" onclick="tg()">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
+  </div>
+  <button class="btn" type="submit">Entrar</button>
+</form>
+<script>
+function tg(){
+  var i=document.getElementById('pw'),b=document.getElementById('eye');
+  var show=i.type==='password';
+  i.type=show?'text':'password';
+  b.setAttribute('aria-pressed',show?'true':'false');
+  b.setAttribute('aria-label',show?'Ocultar senha':'Mostrar senha');
+  b.innerHTML=show
+   ?'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22"/><path d="M9.5 9.5a3 3 0 0 0 4.24 4.24"/></svg>'
+   :'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+}
+</script>
+</body></html>`;
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
-// Login (HTTP Basic) em todas as rotas — protege API e paginas estaticas.
-// Usuario padrao "bradel"; senha vem do secret APP_PASSWORD. Sem senha configurada,
-// bloqueia tudo (fail-closed). Para dev local, defina APP_PASSWORD em .dev.vars.
-app.use("*", (c, next) => {
-  const mw = basicAuth({
-    realm: "Prospeccao Starlink — Bradel",
-    verifyUser: (user, pass) =>
-      !!c.env.APP_PASSWORD && user === (c.env.APP_USER || "bradel") && pass === c.env.APP_PASSWORD,
-  });
-  return mw(c, next);
+// Middleware de login: tela propria + cookie assinado; API tambem aceita Basic.
+app.use("*", async (c, next) => {
+  const env = c.env;
+  if (!env.APP_PASSWORD) return c.text("Login não configurado (defina o secret APP_PASSWORD).", 503);
+  const path = new URL(c.req.url).pathname;
+
+  if (path === "/login") {
+    if (c.req.method === "POST") {
+      const body = await c.req.parseBody();
+      const u = String(body.user ?? "").trim();
+      const p = String(body.pass ?? "");
+      const { user, pass } = creds(env);
+      if (u === user && p === pass) {
+        c.header("Set-Cookie",
+          `${COOKIE}=${await tokenFor(env)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`);
+        return c.redirect("/", 302);
+      }
+      return c.html(loginPage("Usuário ou senha incorretos.", u || "bradel"), 401);
+    }
+    return c.html(loginPage());
+  }
+  if (path === "/logout") {
+    c.header("Set-Cookie", `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
+    return c.redirect("/login", 302);
+  }
+
+  const cookie = getCookie(c, COOKIE);
+  const ok = (cookie !== null && cookie === (await tokenFor(env))) || checkBasic(c);
+  if (ok) return next();
+  if (path.startsWith("/api/")) return c.json({ erro: "Não autenticado." }, 401);
+  return c.redirect("/login", 302);
 });
 
 async function jsonBody(c: any): Promise<Row> {
