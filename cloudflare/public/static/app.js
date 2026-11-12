@@ -3,6 +3,7 @@
 
 const App = (() => {
   let B = null;            // bootstrap (listas, cores, mapa)
+  let OUTLINES = {};       // contornos (uniao das microrregioes) por UF
   let MAP = null;          // dados do mapa (/api/mapa)
   let DASH = null;         // dados do painel (/api/dashboard)
   let EMPRESAS = [];       // lista atual filtrada
@@ -10,6 +11,8 @@ const App = (() => {
   let editMode = false;
   let sel = null;          // "UF|microrregiao" selecionada no mapa
   let buscaTimer = null;
+  let PROSPEC = [];        // resultados atuais da busca de prospecção (Google Places)
+  let prospecReady = false; // filtros da aba Prospecção já montados?
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -67,6 +70,7 @@ const App = (() => {
     const t = localStorage.getItem("tema");
     if (t) document.documentElement.setAttribute("data-theme", t);
     B = await (await fetch("/api/bootstrap")).json();
+    try { OUTLINES = await (await fetch("/static/state-outlines.json")).json(); } catch (e) { OUTLINES = {}; }
     montarFiltros();
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
@@ -149,6 +153,10 @@ const App = (() => {
   function renderMapa() {
     const { w, h } = B.map.dims;
     const regs = B.map.regions, agg = MAP.regioes, max = MAP.max;
+    const selUF = sel ? sel.split("|")[0] : null;
+
+    // 1) Microrregiões com heatmap (escuro = maior potencial). Cada microrregião
+    //    mantém sua geometria e limites (borda fina var(--panel)).
     let paths = "";
     for (const r of regs) {
       const key = r.uf + "|" + r.n;
@@ -157,6 +165,23 @@ const App = (() => {
       const on = sel === key ? " sel" : "";
       paths += `<path class="rg heat${lvl}${on}" d="${r.d}" data-key="${esc(key)}" data-uf="${r.uf}" data-n="${esc(r.n)}"></path>`;
     }
+
+    // 2) Contorno de cada estado (PA, MA, TO, GO) desenhado POR CIMA: limite
+    //    territorial oficial de cada UF (state-outlines.json, gerado por
+    //    tools/build_state_outlines.py), destacando a divisão entre os estados.
+    const porUF = {};
+    for (const r of regs) (porUF[r.uf] = porUF[r.uf] || []).push(r);
+    let outlines = "", labels = "";
+    for (const uf of Object.keys(porUF)) {
+      const list = porUF[uf];
+      const off = selUF && selUF !== uf ? " off" : "";
+      const dUF = OUTLINES[uf];
+      if (dUF) outlines += `<path class="state-outline${off}" d="${dUF}" data-uf="${uf}"></path>`;
+      const cx = list.reduce((s, r) => s + (r.cx || 0), 0) / list.length;
+      const cy = list.reduce((s, r) => s + (r.cy || 0), 0) / list.length;
+      labels += `<text class="state-lbl${off}" x="${cx.toFixed(1)}" y="${cy.toFixed(1)}">${uf}</text>`;
+    }
+
     let marks = "";
     for (const m of MAP.marcadores) {
       marks += `<circle class="mk" cx="${m.x}" cy="${m.y}" r="5" fill="${m.hex}" data-id="${m.id}"></circle>`;
@@ -164,7 +189,7 @@ const App = (() => {
     const svg = $("mapa");
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.classList.toggle("dim", !!sel);
-    svg.innerHTML = paths + marks;
+    svg.innerHTML = paths + outlines + labels + marks;
     svg.querySelectorAll("path.rg").forEach(p => {
       p.addEventListener("mousemove", regiaoTip);
       p.addEventListener("mouseleave", hideTip);
@@ -284,12 +309,188 @@ const App = (() => {
   }
 
   function view(v) {
-    const mapa = v === "mapa";
-    $("view-mapa").classList.toggle("hidden", !mapa);
-    $("view-painel").classList.toggle("hidden", mapa);
-    $("tab-mapa").classList.toggle("on", mapa);
-    $("tab-painel").classList.toggle("on", !mapa);
-    if (!mapa) renderPainel();
+    const views = { mapa: "view-mapa", painel: "view-painel", prospec: "view-prospec" };
+    Object.entries(views).forEach(([k, id]) => $(id).classList.toggle("hidden", k !== v));
+    ["mapa", "painel", "prospec"].forEach(k => $("tab-" + k).classList.toggle("on", k === v));
+    if (v === "painel") renderPainel();
+    if (v === "prospec") initProspec();
+  }
+
+  // ==================== PROSPECÇÃO (busca Google Places) ====================
+  function initProspec() {
+    if (prospecReady) return;
+    $("p-uf").innerHTML = selOpts(B.ufs, "Todos os estados");
+    prospecReady = true;
+    carregarCronStatus();
+  }
+
+  async function carregarCronStatus() {
+    try {
+      const s = await (await fetch("/api/prospeccao/cron-status")).json();
+      renderCronStatus(s);
+    } catch (e) { /* silencioso */ }
+  }
+
+  function renderCronStatus(s) {
+    const el = $("p-auto-txt");
+    if (!el) return;
+    if (!s.ativo) {
+      el.innerHTML = `Varredura automática <b>inativa</b> — falta configurar a chave de busca (SERPER_API_KEY ou PLACES_API_KEY).`;
+      return;
+    }
+    const partes = [`Varredura automática <b>diária</b> (${s.batch} cidades/dia)`];
+    if (s.ultima) {
+      const st = s.stats || {};
+      partes.push(`última: ${esc(s.ultima)}`);
+      if (typeof st.criados === "number") partes.push(`${st.criados} novo(s), ${st.duplicados || 0} já existia(m)`);
+    } else {
+      partes.push("ainda não executada");
+    }
+    if (s.total) partes.push(`cobertura: ${s.cursor || 0}/${s.total} cidades`);
+    el.innerHTML = partes.join(" · ");
+  }
+
+  async function varreduraAgora() {
+    const btn = $("p-runnow");
+    btn.disabled = true; btn.textContent = "Rodando varredura…";
+    try {
+      const r = await fetch("/api/prospeccao/varredura", { method: "POST" });
+      const js = await r.json();
+      if (!r.ok || js.ok === false) { toast(js.erro || "Falha na varredura."); return; }
+      toast(`Varredura: ${js.criados} nova(s) empresa(s) em ${js.buscas} busca(s).`);
+      carregarCronStatus();
+      recarregar();
+    } finally {
+      btn.disabled = false; btn.textContent = "Rodar varredura agora";
+    }
+  }
+
+  async function pUfMudou() {
+    const uf = $("p-uf").value;
+    if (!uf) {
+      $("p-cidades").innerHTML = "";
+      $("p-mr").innerHTML = `<option value="">Todas</option>`;
+      return;
+    }
+    const [munis, mrs] = await Promise.all([
+      fetch("/api/municipios?uf=" + encodeURIComponent(uf)).then(r => r.json()),
+      fetch("/api/microrregioes?uf=" + encodeURIComponent(uf)).then(r => r.json()),
+    ]);
+    $("p-cidades").innerHTML = munis.map(m => `<option value="${esc(m.municipio)}">`).join("");
+    $("p-mr").innerHTML = `<option value="">Todas</option>` +
+      mrs.map(o => `<option value="${esc(o.microrregiao)}">${esc(o.microrregiao)}</option>`).join("");
+  }
+
+  function sugProspec(t) { $("p-termo").value = t; buscarProspec(); }
+
+  async function buscarProspec() {
+    const termo = $("p-termo").value.trim();
+    const uf = $("p-uf").value, cidade = $("p-cidade").value.trim(), mr = $("p-mr").value;
+    if (!termo && !uf && !cidade) { toast("Informe um termo, cidade ou estado para buscar."); return; }
+    const btn = $("p-buscar"); btn.disabled = true; btn.textContent = "Buscando…";
+    $("p-saveall").style.display = "none";
+    $("p-info").textContent = "";
+    $("p-lista").innerHTML = `<div class="empty">Buscando empresas na web…</div>`;
+    try {
+      const p = new URLSearchParams();
+      if (termo) p.set("termo", termo);
+      if (uf) p.set("uf", uf);
+      if (cidade) p.set("cidade", cidade);
+      if (mr) p.set("microrregiao", mr);
+      const r = await fetch("/api/busca-places?" + p.toString());
+      const js = await r.json();
+      if (!r.ok) {
+        PROSPEC = [];
+        $("p-lista").innerHTML = `<div class="empty">${esc(js.erro || "Falha na busca.")}</div>`;
+        return;
+      }
+      PROSPEC = js.resultados || [];
+      renderProspecResults(js);
+    } finally {
+      btn.disabled = false; btn.textContent = "Buscar";
+    }
+  }
+
+  function renderProspecResults(js) {
+    $("p-title").textContent = `Resultados (${PROSPEC.length})`;
+    const novos = PROSPEC.filter(x => !x.ja_salvo).length;
+    const info = [];
+    if (js && js.excluidos) info.push(`${js.excluidos} grande(s) rede(s) excluída(s)`);
+    if (novos) info.push(`${novos} novo(s) para salvar`);
+    $("p-info").textContent = info.join(" · ");
+    $("p-saveall").style.display = novos ? "" : "none";
+    if (!PROSPEC.length) {
+      $("p-lista").innerHTML = `<div class="empty">Nenhuma empresa encontrada para esta busca. Tente outro termo, cidade ou estado.</div>`;
+      return;
+    }
+    $("p-lista").innerHTML = PROSPEC.map((x, i) => cardProspec(x, i)).join("");
+  }
+
+  function cardProspec(x, i) {
+    const loc = [x.cidade, x.uf].filter(Boolean).join(" · ");
+    const tel = x.telefone || "";
+    const linhas = [];
+    if (tel) linhas.push(`<div class="pl"><span>${x.whatsapp ? "WhatsApp" : "Telefone"}</span><b>${esc(tel)}</b></div>`);
+    linhas.push(`<div class="pl"><span>CNPJ</span><b class="hint">a completar</b></div>`);
+    if (x.endereco) linhas.push(`<div class="pl"><span>Endereço</span><b>${esc(x.endereco)}</b></div>`);
+    if (loc) linhas.push(`<div class="pl"><span>Cidade/UF</span><b>${esc(loc)}</b></div>`);
+    const links = [];
+    if (x.site) links.push(`<a href="${esc(x.site)}" target="_blank" rel="noopener">Site</a>`);
+    if (x.fonte) links.push(`<a href="${esc(x.fonte)}" target="_blank" rel="noopener">Ver no Google Maps</a>`);
+    const acao = x.ja_salvo
+      ? `<button class="btn" disabled style="background:var(--soft);color:var(--muted)">✓ Já está na base</button>`
+      : `<button class="btn primary" id="psave-${i}" onclick="App.salvarProspec(${i})">+ Salvar na base</button>`;
+    return `
+      <div class="pcard${x.ja_salvo ? " saved" : ""}">
+        <div class="ph">
+          <div class="pt">
+            <b>${esc(x.nome)}</b>
+            ${x.tipo ? `<span class="ptipo">${esc(x.tipo)}</span>` : ""}
+          </div>
+          ${x.ja_salvo ? `<span class="badge-saved">na base</span>` : ""}
+        </div>
+        <div class="pkv">${linhas.join("")}</div>
+        ${links.length ? `<div class="plinks">${links.join("")}</div>` : ""}
+        <div class="pfoot">${acao}</div>
+      </div>`;
+  }
+
+  async function salvarProspec(i) {
+    const cand = PROSPEC[i];
+    if (!cand || cand.ja_salvo) return;
+    const btn = $("psave-" + i); if (btn) { btn.disabled = true; btn.textContent = "Salvando…"; }
+    const r = await fetch("/api/prospeccao/salvar", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidatos: [cand] }),
+    });
+    const js = await r.json();
+    if (!r.ok) { toast(js.erro || "Falha ao salvar."); if (btn) { btn.disabled = false; btn.textContent = "+ Salvar na base"; } return; }
+    if (js.criados) {
+      cand.ja_salvo = true; cand.empresa_id = js.ids && js.ids[0];
+      toast("Empresa salva na base de prospecção.");
+    } else {
+      cand.ja_salvo = true;
+      toast("Essa empresa já estava na base (não duplicada).");
+    }
+    renderProspecResults();
+    recarregar();
+  }
+
+  async function salvarTodosProspec() {
+    const novos = PROSPEC.filter(x => !x.ja_salvo);
+    if (!novos.length) return;
+    $("p-saveall").disabled = true;
+    const r = await fetch("/api/prospeccao/salvar", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidatos: novos }),
+    });
+    const js = await r.json();
+    $("p-saveall").disabled = false;
+    if (!r.ok) { toast(js.erro || "Falha ao salvar."); return; }
+    novos.forEach(x => { x.ja_salvo = true; });
+    toast(`${js.criados} nova(s) salva(s)${js.duplicados ? ` · ${js.duplicados} já existia(m)` : ""}.`);
+    renderProspecResults();
+    recarregar();
   }
 
   // ==================== DRAWER: ficha / cadastro ====================
@@ -524,6 +725,8 @@ const App = (() => {
     abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus,
     addContato, delContato, addFilial, delFilial, excluir, realce,
     exportar, modelo, abrirImport, fazerImport,
+    pUfMudou, sugProspec, buscarProspec, salvarProspec, salvarTodosProspec,
+    varreduraAgora,
   };
 })();
 

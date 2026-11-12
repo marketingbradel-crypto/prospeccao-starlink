@@ -21,6 +21,7 @@
   <nav class="viewtabs" role="tablist" aria-label="Visão">
     <button id="tab-mapa" class="on" onclick="App.view('mapa')">Mapa</button>
     <button id="tab-painel" onclick="App.view('painel')">Dashboard</button>
+    <button id="tab-prospec" onclick="App.view('prospec')">Prospecção Starlink</button>
   </nav>
 
   <div class="topactions">
@@ -72,6 +73,11 @@
       <div class="mapbox">
         <svg id="mapa" role="img" aria-label="Mapa de prospecção dos parceiros Starlink"></svg>
       </div>
+      <div class="heatscale" aria-hidden="true">
+        <span class="lbl">Menor potencial</span>
+        <i class="h1"></i><i class="h2"></i><i class="h3"></i><i class="h4"></i><i class="h5"></i><i class="h6"></i>
+        <span class="lbl">Maior potencial</span>
+      </div>
       <div class="legend" id="legend"></div>
     </section>
 
@@ -87,6 +93,55 @@
 
   <!-- ===================== VISÃO DASHBOARD ===================== -->
   <div class="view-painel hidden" id="view-painel"></div>
+
+  <!-- ===================== VISÃO PROSPECÇÃO ===================== -->
+  <div class="view-prospec hidden" id="view-prospec">
+    <section class="card prospec-search">
+      <div class="hd">
+        <h2>Buscar empresas e vendedores Starlink</h2>
+        <span class="map-ctx">Busca na web (Google) por região · prioriza lojas locais e revendedores independentes · grandes redes e distribuidoras generalistas são excluídas automaticamente</span>
+      </div>
+      <div class="bd">
+        <div class="prospec-form">
+          <label class="fld full"><span>O que buscar</span>
+            <input id="p-termo" placeholder="Ex.: onde comprar Starlink · revenda de antena Starlink · internet via satélite">
+          </label>
+          <label class="fld"><span>Estado</span><select id="p-uf" onchange="App.pUfMudou()"></select></label>
+          <label class="fld"><span>Cidade</span>
+            <input id="p-cidade" list="p-cidades" placeholder="Ex.: Rio Verde" autocomplete="off">
+            <datalist id="p-cidades"></datalist>
+          </label>
+          <label class="fld"><span>Microrregião</span><select id="p-mr"><option value="">Todas</option></select></label>
+          <button class="btn primary" id="p-buscar" onclick="App.buscarProspec()">Buscar</button>
+        </div>
+        <div class="prospec-sugs">
+          <span>Sugestões:</span>
+          <button class="chip-btn" onclick="App.sugProspec('onde comprar Starlink')">onde comprar Starlink</button>
+          <button class="chip-btn" onclick="App.sugProspec('revenda de antena Starlink')">revenda de antena Starlink</button>
+          <button class="chip-btn" onclick="App.sugProspec('loja de internet via satélite')">internet via satélite</button>
+          <button class="chip-btn" onclick="App.sugProspec('instalação de Starlink')">instalação de Starlink</button>
+        </div>
+        <div class="prospec-auto" id="p-auto">
+          <span class="pa-ico">🔄</span>
+          <span class="pa-txt" id="p-auto-txt">Varredura automática diária — carregando status…</span>
+          <button class="btn" id="p-runnow" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.varreduraAgora()">Rodar varredura agora</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card prospec-results">
+      <div class="hd">
+        <h2 id="p-title">Resultados</h2>
+        <span class="p-info" id="p-info"></span>
+        <button class="btn" id="p-saveall" style="display:none;margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.salvarTodosProspec()">+ Salvar todos os novos</button>
+      </div>
+      <div class="bd">
+        <div id="p-lista" class="prospec-list">
+          <div class="empty">Faça uma busca para encontrar empresas e vendedores Starlink na região.</div>
+        </div>
+      </div>
+    </section>
+  </div>
 </main>
 
 <!-- ===================== DRAWER (ficha) ===================== -->

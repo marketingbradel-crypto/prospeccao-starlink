@@ -8,6 +8,10 @@
   "observability": {
     "enabled": true
   },
+  // Varredura automatica diaria da prospeccao (09:00 UTC = 06:00 BRT).
+  "triggers": {
+    "crons": ["0 9 * * *"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",

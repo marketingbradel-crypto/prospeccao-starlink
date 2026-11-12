@@ -3,6 +3,7 @@
 
 const App = (() => {
   let B = null;            // bootstrap (listas, cores, mapa)
+  let OUTLINES = {};       // contornos (uniao das microrregioes) por UF
   let MAP = null;          // dados do mapa (/api/mapa)
   let DASH = null;         // dados do painel (/api/dashboard)
   let EMPRESAS = [];       // lista atual filtrada
@@ -67,6 +68,7 @@ const App = (() => {
     const t = localStorage.getItem("tema");
     if (t) document.documentElement.setAttribute("data-theme", t);
     B = await (await fetch("/api/bootstrap")).json();
+    try { OUTLINES = await (await fetch("/static/state-outlines.json")).json(); } catch (e) { OUTLINES = {}; }
     montarFiltros();
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
@@ -149,6 +151,10 @@ const App = (() => {
   function renderMapa() {
     const { w, h } = B.map.dims;
     const regs = B.map.regions, agg = MAP.regioes, max = MAP.max;
+    const selUF = sel ? sel.split("|")[0] : null;
+
+    // 1) Microrregiões com heatmap (escuro = maior potencial). Cada microrregião
+    //    mantém sua geometria e limites (borda fina var(--panel)).
     let paths = "";
     for (const r of regs) {
       const key = r.uf + "|" + r.n;
@@ -157,6 +163,23 @@ const App = (() => {
       const on = sel === key ? " sel" : "";
       paths += `<path class="rg heat${lvl}${on}" d="${r.d}" data-key="${esc(key)}" data-uf="${r.uf}" data-n="${esc(r.n)}"></path>`;
     }
+
+    // 2) Contorno de cada estado (PA, MA, TO, GO) desenhado POR CIMA: limite
+    //    territorial oficial de cada UF (state-outlines.json, gerado por
+    //    tools/build_state_outlines.py), destacando a divisão entre os estados.
+    const porUF = {};
+    for (const r of regs) (porUF[r.uf] = porUF[r.uf] || []).push(r);
+    let outlines = "", labels = "";
+    for (const uf of Object.keys(porUF)) {
+      const list = porUF[uf];
+      const off = selUF && selUF !== uf ? " off" : "";
+      const dUF = OUTLINES[uf];
+      if (dUF) outlines += `<path class="state-outline${off}" d="${dUF}" data-uf="${uf}"></path>`;
+      const cx = list.reduce((s, r) => s + (r.cx || 0), 0) / list.length;
+      const cy = list.reduce((s, r) => s + (r.cy || 0), 0) / list.length;
+      labels += `<text class="state-lbl${off}" x="${cx.toFixed(1)}" y="${cy.toFixed(1)}">${uf}</text>`;
+    }
+
     let marks = "";
     for (const m of MAP.marcadores) {
       marks += `<circle class="mk" cx="${m.x}" cy="${m.y}" r="5" fill="${m.hex}" data-id="${m.id}"></circle>`;
@@ -164,7 +187,7 @@ const App = (() => {
     const svg = $("mapa");
     svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
     svg.classList.toggle("dim", !!sel);
-    svg.innerHTML = paths + marks;
+    svg.innerHTML = paths + outlines + labels + marks;
     svg.querySelectorAll("path.rg").forEach(p => {
       p.addEventListener("mousemove", regiaoTip);
       p.addEventListener("mouseleave", hideTip);

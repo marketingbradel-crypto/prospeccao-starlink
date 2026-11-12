@@ -12,6 +12,8 @@ interface Env {
   ASSETS: Fetcher;
   APP_USER?: string;   // usuario do login (padrao "bradel")
   APP_PASSWORD?: string; // senha — definida como secret (wrangler secret put APP_PASSWORD)
+  PLACES_API_KEY?: string; // chave do Google Places API (wrangler secret put PLACES_API_KEY)
+  SERPER_API_KEY?: string;  // chave do Serper.dev (wrangler secret put SERPER_API_KEY) — tem precedencia
 }
 
 // Colunas da empresa (ordem = modelo), portado de db.EMPRESA_CAMPOS.
@@ -607,6 +609,377 @@ app.get("/api/dashboard", async (c) => {
 });
 
 // --------------------------------------------------------------------------
+// Prospeccao Starlink — busca na web (Google Places) + salvar na base
+// --------------------------------------------------------------------------
+// Grandes redes e distribuidoras generalistas a excluir dos resultados.
+// Comparacao por "contem" sobre o nome normalizado (sem acento/minusculo).
+// Editavel: adicione aqui novas redes que nao devem aparecer na prospeccao.
+const REDES_BLOQUEADAS = [
+  "fujioka", "gazin", "havan", "magazine luiza", "magazineluiza", "magalu",
+  "casas bahia", "casa bahia", "ponto frio", "pontofrio", "americanas",
+  "fast shop", "fastshop", "lojas cem", "ricardo eletro",
+  "mercado livre", "amazon", "shopee", "aliexpress",
+  // Grandes redes/distribuidoras generalistas. Nomes especificos para nao
+  // excluir lojas locais por engano. Adicione novas redes conforme necessario.
+];
+
+function nomeBloqueado(nome: string): boolean {
+  const n = L.norm(nome);
+  if (!n) return false;
+  return REDES_BLOQUEADAS.some((rede) => n.includes(rede));
+}
+
+// Indice da base atual para deduplicacao (telefone normalizado e nome+cidade).
+// A base e pequena; dedup em memoria evita normalizar telefone em SQL.
+interface BaseIndex {
+  porTel: Map<string, number>;
+  porNome: Map<string, number>;
+}
+
+async function baseIndex(db: D1Database): Promise<BaseIndex> {
+  const { results } = await db
+    .prepare("SELECT id, nome_fantasia, razao_social, cidade, telefone_comercial, whatsapp FROM empresas")
+    .all<Row>();
+  const porTel = new Map<string, number>();
+  const porNome = new Map<string, number>();
+  for (const r of results ?? []) {
+    for (const t of [r.telefone_comercial, r.whatsapp]) {
+      const d = soDigitos(t);
+      if (d.length >= 8) porTel.set(d, r.id as number);
+    }
+    const nm = L.norm(String(r.nome_fantasia || r.razao_social || ""));
+    const cid = L.norm(String(r.cidade || ""));
+    if (nm) porNome.set(`${nm}|${cid}`, r.id as number);
+  }
+  return { porTel, porNome };
+}
+
+function achaDup(idx: BaseIndex, nome: string, cidade: string, telefone: string): number | null {
+  const d = soDigitos(telefone);
+  if (d.length >= 8 && idx.porTel.has(d)) return idx.porTel.get(d)!;
+  const k = `${L.norm(nome)}|${L.norm(cidade)}`;
+  if (L.norm(nome) && idx.porNome.has(k)) return idx.porNome.get(k)!;
+  return null;
+}
+
+// Extrai cidade e UF dos address_components do Places (padrao BR).
+function extrairLocal(place: any): { cidade: string; uf: string } {
+  let cidade = "";
+  let uf = "";
+  for (const comp of place.addressComponents ?? []) {
+    const tipos: string[] = comp.types ?? [];
+    if (tipos.includes("administrative_area_level_1")) uf = (comp.shortText || "").toUpperCase();
+    if (tipos.includes("locality") && !cidade) cidade = comp.longText || "";
+    if (tipos.includes("administrative_area_level_2") && !cidade) cidade = comp.longText || "";
+  }
+  return { cidade, uf };
+}
+
+// Telefone celular BR (11 digitos com 9 apos o DDD) tambem vira WhatsApp.
+function ehCelular(telefone: string): boolean {
+  const d = soDigitos(telefone).replace(/^55/, "");
+  return d.length === 11 && d[2] === "9";
+}
+
+// Chamada ao Google Places (Text Search, New). Retorna os places crus ou lanca erro.
+async function placesBuscar(key: string, textQuery: string): Promise<any[]> {
+  const resp = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": key,
+      "X-Goog-FieldMask": [
+        "places.id", "places.displayName", "places.formattedAddress",
+        "places.nationalPhoneNumber", "places.internationalPhoneNumber",
+        "places.websiteUri", "places.googleMapsUri", "places.location",
+        "places.addressComponents", "places.primaryTypeDisplayName", "places.businessStatus",
+      ].join(","),
+    },
+    body: JSON.stringify({ textQuery, languageCode: "pt-BR", regionCode: "BR", maxResultCount: 20 }),
+  });
+  const data: any = await resp.json();
+  if (!resp.ok) throw new Error(data?.error?.message || `Erro ${resp.status} na API do Google Places.`);
+  return data.places ?? [];
+}
+
+// Monta o texto de busca estilo "comprar Starlink em Rio Verde GO".
+function montarTextQuery(termo: string, cidade: string, mr: string, uf: string): string {
+  const ufNome = uf ? (geo.estado(uf)?.nome ?? uf) : "";
+  const local = cidade || mr || ufNome;
+  const t = termo || "Starlink internet via satélite revenda";
+  return [t, local, uf].filter(Boolean).join(" ").trim();
+}
+
+// Normaliza um place do Google no formato de candidato da prospeccao.
+function normalizaPlace(p: any): Row {
+  const nome = p.displayName?.text || "";
+  const { cidade, uf } = extrairLocal(p);
+  const telefone = p.nationalPhoneNumber || p.internationalPhoneNumber || "";
+  return {
+    place_id: p.id || "",
+    nome,
+    tipo: p.primaryTypeDisplayName?.text || "",
+    endereco: p.formattedAddress || "",
+    cidade,
+    uf,
+    telefone,
+    whatsapp: ehCelular(telefone) ? telefone : "",
+    cnpj: "",
+    site: p.websiteUri || "",
+    fonte: p.googleMapsUri || "",
+    lat: p.location?.latitude ?? null,
+    lng: p.location?.longitude ?? null,
+  };
+}
+
+// Extrai cidade e UF do endereco textual do Serper (padrao BR: "..., Cidade - UF, CEP, Brazil").
+function extrairLocalSerper(address: string): { cidade: string; uf: string } {
+  let cidade = "", uf = "";
+  const re = /(?:^|,)\s*([^,]+?)\s*-\s*([A-Z]{2})\b/g;
+  let m: RegExpExecArray | null, last: RegExpExecArray | null = null;
+  while ((m = re.exec(address || "")) !== null) last = m;
+  if (last) { cidade = last[1].trim(); uf = last[2].toUpperCase(); }
+  return { cidade, uf };
+}
+
+// Chamada ao Serper.dev (endpoint /places = resultados do Google Maps). Normaliza no formato comum.
+async function serperBuscar(key: string, textQuery: string): Promise<Row[]> {
+  const resp = await fetch("https://google.serper.dev/places", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-KEY": key },
+    body: JSON.stringify({ q: textQuery, gl: "br", hl: "pt-br" }),
+  });
+  const data: any = await resp.json();
+  if (!resp.ok) throw new Error(data?.message || `Erro ${resp.status} na API do Serper.`);
+  return (data.places ?? []).map((p: any): Row => {
+    const { cidade, uf } = extrairLocalSerper(p.address || "");
+    const telefone = p.phoneNumber || "";
+    return {
+      place_id: p.cid ? String(p.cid) : "",
+      nome: p.title || "",
+      tipo: p.category || p.type || "",
+      endereco: p.address || "",
+      cidade,
+      uf,
+      telefone,
+      whatsapp: ehCelular(telefone) ? telefone : "",
+      cnpj: "",
+      site: p.website || "",
+      fonte: p.cid ? `https://www.google.com/maps?cid=${p.cid}` : (p.website || ""),
+      lat: p.latitude ?? null,
+      lng: p.longitude ?? null,
+    };
+  });
+}
+
+// Despacha para a fonte configurada: Serper tem precedencia; senao Google Places.
+// Retorna candidatos ja normalizados no formato comum. Lanca se nenhuma chave existir.
+async function buscarFonte(env: Env, textQuery: string): Promise<{ provider: string; candidatos: Row[] }> {
+  if (env.SERPER_API_KEY) {
+    return { provider: "serper", candidatos: await serperBuscar(env.SERPER_API_KEY, textQuery) };
+  }
+  if (env.PLACES_API_KEY) {
+    const places = await placesBuscar(env.PLACES_API_KEY, textQuery);
+    return { provider: "places", candidatos: places.map(normalizaPlace) };
+  }
+  throw new Error("Nenhuma chave de busca configurada (defina SERPER_API_KEY ou PLACES_API_KEY).");
+}
+
+function fonteConfigurada(env: Env): boolean {
+  return !!(env.SERPER_API_KEY || env.PLACES_API_KEY);
+}
+
+// Insere um candidato na base evitando duplicidade (telefone OU nome+cidade).
+// Atualiza o indice em memoria para o proximo candidato do mesmo lote. Sem CNPJ.
+async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promise<"criado" | "dup"> {
+  const nome = limpar(cand.nome) || "";
+  if (!nome) return "dup";
+  const cidade = limpar(cand.cidade) || "";
+  const telefone = limpar(cand.telefone) || "";
+  if (achaDup(idx, nome, cidade, telefone) !== null) return "dup";
+  const obs: string[] = [];
+  if (cand.fonte) obs.push(`Fonte: ${cand.fonte}`);
+  if (cand.tipo) obs.push(`Tipo (Google): ${cand.tipo}`);
+  if (cand.auto) obs.push(`Encontrado pela varredura automática em ${hoje()}`);
+  const e = montarEmpresa({
+    razao_social: nome,
+    nome_fantasia: nome,
+    telefone_comercial: telefone,
+    whatsapp: limpar(cand.whatsapp) || "",
+    site_instagram: limpar(cand.site) || "",
+    endereco: limpar(cand.endereco) || "",
+    cidade,
+    uf: (limpar(cand.uf) || "").toUpperCase(),
+    latitude: cand.lat,
+    longitude: cand.lng,
+    origem_contato: "Prospecção ativa",
+    observacoes: obs.join("\n"),
+  }, true);
+  e.codigo = await proximoCodigo(db);
+  const id = await inserirEmpresa(db, e);
+  const d = soDigitos(telefone);
+  if (d.length >= 8) idx.porTel.set(d, id);
+  idx.porNome.set(`${L.norm(nome)}|${L.norm(cidade)}`, id);
+  return "criado";
+}
+
+// GET /api/busca-places?termo=&uf=&cidade=&microrregiao=
+// Busca manual: consulta a fonte (Serper ou Places), exclui grandes redes e marca o que ja esta na base.
+app.get("/api/busca-places", async (c) => {
+  if (!fonteConfigurada(c.env)) {
+    return c.json({ erro: "Busca indisponível: defina a chave de busca (SERPER_API_KEY ou PLACES_API_KEY)." }, 503);
+  }
+  const uf = (limpar(c.req.query("uf")) || "").toString().toUpperCase();
+  const cidade = (limpar(c.req.query("cidade")) || "").toString();
+  const mr = (limpar(c.req.query("microrregiao")) || "").toString();
+  const termo = (limpar(c.req.query("termo")) || "").toString();
+  const textQuery = montarTextQuery(termo, cidade, mr, uf);
+
+  let candidatos: Row[];
+  try {
+    ({ candidatos } = await buscarFonte(c.env, textQuery));
+  } catch (ex: any) {
+    return c.json({ erro: ex?.message || "Falha ao consultar a fonte de busca." }, 502);
+  }
+
+  const idx = await baseIndex(c.env.DB);
+  const resultados: any[] = [];
+  let excluidos = 0;
+  for (const cand of candidatos) {
+    if (!cand.nome) continue;
+    if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
+    // Se o usuario filtrou por UF, mantem apenas resultados daquela UF (quando identificavel).
+    if (uf && cand.uf && cand.uf !== uf) continue;
+    const dup = achaDup(idx, cand.nome, cand.cidade, cand.telefone);
+    resultados.push({ ...cand, ja_salvo: dup !== null, empresa_id: dup });
+  }
+  return c.json({ textQuery, total: resultados.length, excluidos, resultados });
+});
+
+// POST /api/prospeccao/salvar  { candidatos: [ {nome, endereco, cidade, uf, telefone, whatsapp, site, fonte, lat, lng} ] }
+// Insere na base evitando duplicidade (por telefone ou nome+cidade). Sem CNPJ.
+app.post("/api/prospeccao/salvar", async (c) => {
+  const body = await jsonBody(c);
+  const candidatos: any[] = Array.isArray(body.candidatos) ? body.candidatos : (body.nome ? [body] : []);
+  if (!candidatos.length) return c.json({ erro: "Nenhum candidato enviado." }, 400);
+
+  const idx = await baseIndex(c.env.DB);
+  let criados = 0, duplicados = 0;
+  for (const cand of candidatos) {
+    const r = await salvarCandidato(c.env.DB, idx, cand);
+    if (r === "criado") criados += 1; else duplicados += 1;
+  }
+  return c.json({ criados, duplicados });
+});
+
+// --------------------------------------------------------------------------
+// Varredura automatica (Cron Trigger diario) — prospeccao rotativa por cidade.
+// Rodar todas as cidades todo dia seria caro e bateria nos limites do Worker;
+// por isso cada execucao processa um LOTE de cidades e avanca um cursor salvo
+// na tabela meta. Em alguns dias cobre toda a regiao e recomeca.
+// --------------------------------------------------------------------------
+const CRON_BATCH = 25;                                  // cidades por execucao
+const CRON_TERMOS = ["Starlink internet via satélite"]; // termos por cidade (1 = mais barato)
+
+async function metaGet(db: D1Database, chave: string): Promise<string | null> {
+  const r = await db.prepare("SELECT valor FROM meta WHERE chave=?").bind(chave).first<Row>();
+  return r ? String(r.valor) : null;
+}
+
+async function metaSet(db: D1Database, chave: string, valor: string): Promise<void> {
+  await db
+    .prepare("INSERT INTO meta (chave,valor) VALUES (?,?) ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor")
+    .bind(chave, valor).run();
+}
+
+// Lista ordenada e estavel de cidades-alvo (todas as cidades das UFs de atuacao).
+function alvosCron(): { municipio: string; uf: string }[] {
+  const out: { municipio: string; uf: string }[] = [];
+  for (const uf of L.UFS) {
+    for (const m of geo.listaMunicipios(uf)) out.push({ municipio: m.municipio, uf: m.uf });
+  }
+  return out;
+}
+
+// Executa um lote da varredura a partir do cursor. Retorna estatisticas.
+async function runCron(env: Env): Promise<Row> {
+  const db = env.DB;
+  if (!fonteConfigurada(env)) {
+    return { ok: false, erro: "Nenhuma chave de busca configurada (SERPER_API_KEY ou PLACES_API_KEY)." };
+  }
+  const cidades = alvosCron();
+  if (!cidades.length) return { ok: false, erro: "Sem cidades-alvo." };
+
+  const cursor = parseInt((await metaGet(db, "cron_cursor")) || "0", 10) || 0;
+  const lote: { municipio: string; uf: string }[] = [];
+  for (let i = 0; i < CRON_BATCH && i < cidades.length; i++) {
+    lote.push(cidades[(cursor + i) % cidades.length]);
+  }
+
+  const idx = await baseIndex(db);
+  let criados = 0, duplicados = 0, excluidos = 0, buscas = 0, erros = 0;
+  for (const alvo of lote) {
+    for (const termo of CRON_TERMOS) {
+      buscas += 1;
+      let candidatos: Row[];
+      try {
+        ({ candidatos } = await buscarFonte(env, montarTextQuery(termo, alvo.municipio, "", alvo.uf)));
+      } catch {
+        erros += 1;
+        continue;
+      }
+      for (const cand of candidatos) {
+        if (!cand.nome) continue;
+        if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
+        if (alvo.uf && cand.uf && cand.uf !== alvo.uf) continue;
+        cand.auto = true;
+        const r = await salvarCandidato(db, idx, cand);
+        if (r === "criado") criados += 1; else duplicados += 1;
+      }
+    }
+  }
+
+  const novoCursor = (cursor + CRON_BATCH) % cidades.length;
+  const stats: Row = {
+    ok: true, data: agora(), buscas, criados, duplicados, excluidos, erros,
+    cidades: lote.map((a) => `${a.municipio}/${a.uf}`),
+    cursor_de: cursor, cursor_ate: novoCursor, total_cidades: cidades.length,
+  };
+  await metaSet(db, "cron_cursor", String(novoCursor));
+  await metaSet(db, "cron_last_run", agora());
+  await metaSet(db, "cron_last_stats", JSON.stringify(stats));
+  console.log(
+    `Cron prospecção: ${buscas} buscas em ${lote.length} cidades · ` +
+    `${criados} novos, ${duplicados} duplicados, ${excluidos} excluídos, ${erros} erros · ` +
+    `cursor ${cursor}→${novoCursor}/${cidades.length}`
+  );
+  return stats;
+}
+
+// Status da varredura automatica (para exibir na aba Prospeccao).
+app.get("/api/prospeccao/cron-status", async (c) => {
+  const db = c.env.DB;
+  const cursor = parseInt((await metaGet(db, "cron_cursor")) || "0", 10) || 0;
+  const total = alvosCron().length;
+  const ultima = await metaGet(db, "cron_last_run");
+  let stats: any = null;
+  try { stats = JSON.parse((await metaGet(db, "cron_last_stats")) || "null"); } catch { stats = null; }
+  const provider = c.env.SERPER_API_KEY ? "serper" : (c.env.PLACES_API_KEY ? "places" : null);
+  return c.json({
+    ativo: fonteConfigurada(c.env), provider, cursor, total, batch: CRON_BATCH, termos: CRON_TERMOS, ultima, stats,
+  });
+});
+
+// Dispara uma varredura imediata (botao "Rodar agora"). Roda 1 lote sincrono.
+app.post("/api/prospeccao/varredura", async (c) => {
+  if (!fonteConfigurada(c.env)) {
+    return c.json({ erro: "Varredura indisponível: defina SERPER_API_KEY ou PLACES_API_KEY." }, 503);
+  }
+  const stats = await runCron(c.env);
+  return c.json(stats);
+});
+
+// --------------------------------------------------------------------------
 // Importacao / exportacao Excel
 // --------------------------------------------------------------------------
 const MODELO_COLS: [string, string][] = [
@@ -753,4 +1126,10 @@ app.post("/api/import", async (c) => {
 // Fallback: tudo que nao e /api/* vai para os assets estaticos (SPA), ja autenticado.
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+// Export com handler HTTP (Hono) + handler agendado (Cron Trigger diario).
+export default {
+  fetch: app.fetch,
+  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    ctx.waitUntil(runCron(env));
+  },
+};
