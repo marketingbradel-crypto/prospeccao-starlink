@@ -78,9 +78,29 @@ O `account_id` já está em `wrangler.jsonc`, não precisa de secret.
 
 ---
 
-## ⚠️ Autenticação / acesso
+## 🔒 Autenticação / acesso
 
-A aplicação **não tem login** — qualquer pessoa com a URL do Worker consegue ler e
-editar o banco de prospecção. Antes de usar com dados reais, proteja o acesso com
-**Cloudflare Access** (Zero Trust) na rota do Worker, ou adicione autenticação na app.
-Enquanto isso não existir, mantenha a URL privada.
+A aplicação é protegida por **login (HTTP Basic)** em todas as rotas — API e páginas.
+As credenciais ficam em **secrets** do Worker (nunca no código/git):
+
+- `APP_USER` — usuário (padrão `bradel`)
+- `APP_PASSWORD` — senha
+
+Definir/trocar a senha:
+
+```bash
+cd cloudflare
+printf 'NOVA_SENHA' | npx wrangler secret put APP_PASSWORD
+printf 'usuario'    | npx wrangler secret put APP_USER   # opcional
+```
+
+Para dev local, crie `cloudflare/.dev.vars` (já no .gitignore):
+
+```
+APP_USER = "bradel"
+APP_PASSWORD = "sua-senha-local"
+```
+
+> Produção: **https://prospeccao-starlink.bradel.workers.dev**
+> Se mais tarde quiser login por e-mail corporativo (SSO) em vez de senha única,
+> dá para trocar por **Cloudflare Access** (Zero Trust) sem mexer no código.
