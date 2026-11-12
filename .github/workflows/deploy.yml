@@ -3,6 +3,7 @@ name: Deploy — Cloudflare Worker
 # Faz deploy da Plataforma de Prospeccao Starlink (cloudflare/) a cada push na main.
 # Requer o secret CLOUDFLARE_API_TOKEN no repositorio (Settings > Secrets > Actions).
 # O account_id ja esta em cloudflare/wrangler.jsonc.
+# Redeploy manual solicitado em 2026-11-12 (mapa: heatmap quente + drill-down por estado).
 
 on:
   push:
