@@ -157,6 +157,14 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .tbl-emp td.c-resp{color:var(--muted)}
 /* Coluna de folga: absorve o espaco sobrando p/ as colunas ficarem compactas (sem vao). */
 .tbl-emp .sp{width:100%;padding:0}
+/* Tabela de pendentes da varredura: linhas nao clicaveis, acoes por linha. */
+.tbl-pend tbody tr{cursor:default}
+.tbl-pend tbody tr:hover td{background:transparent}
+.tbl-pend .pend-row-acts{display:flex;gap:6px;white-space:nowrap}
+.tbl-pend .btn.sm{padding:5px 10px;font-size:12.5px;height:auto}
+.prospec-pend .hd{flex-wrap:wrap}
+.prospec-pend .pend-acts{display:flex;gap:8px}
+.prospec-pend .lista{max-height:60vh}
 .hint{color:var(--muted);font-size:11.5px}
 .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;white-space:nowrap}
 .badge .d{width:9px;height:9px;border-radius:50%;flex:none}

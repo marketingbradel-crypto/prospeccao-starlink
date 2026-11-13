@@ -136,6 +136,19 @@
       </div>
     </section>
 
+    <!-- Pendentes da varredura automática (aguardando revisão antes de entrar na base) -->
+    <section class="card prospec-pend" id="p-pendwrap">
+      <div class="hd">
+        <h2 id="p-pend-title">Pendentes da varredura</h2>
+        <span class="map-ctx">Empresas encontradas pela varredura automática · revise e salve na base, ou descarte. Elas <b>não</b> entram na base sozinhas.</span>
+        <div class="pend-acts" id="p-pend-acts" style="margin-left:auto;display:none">
+          <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.salvarTodosPendentes()">+ Salvar todos na base</button>
+          <button class="btn ghost danger" onclick="App.descartarTodosPendentes()">Descartar todos</button>
+        </div>
+      </div>
+      <div class="lista" id="p-pend"></div>
+    </section>
+
     <!-- Mini-mapa dos resultados (plota as lojas encontradas por lat/lng) -->
     <section class="card prospec-mapa" id="p-mapwrap" style="display:none">
       <div class="hd">

@@ -16,6 +16,7 @@ const App = (() => {
   let prospecReady = false; // filtros da aba Prospecção já montados?
   let HIST = [];           // histórico de pesquisas (metadados), por região
   let curPesquisa = null;  // id da pesquisa atualmente exibida nos resultados
+  let PEND = [];           // pendentes da varredura automática (aguardando revisão)
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -623,6 +624,7 @@ const App = (() => {
       prospecReady = true;
       carregarCronStatus();
     }
+    carregarPendentes();
     carregarHist();
   }
 
@@ -644,7 +646,7 @@ const App = (() => {
     if (s.ultima) {
       const st = s.stats || {};
       partes.push(`última: ${esc(s.ultima)}`);
-      if (typeof st.criados === "number") partes.push(`${st.criados} novo(s), ${st.duplicados || 0} já existia(m)`);
+      if (typeof st.pendentes === "number") partes.push(`${st.pendentes} pendente(s) p/ revisar, ${st.ja_na_base || 0} já na base`);
     } else {
       partes.push("ainda não executada");
     }
@@ -659,9 +661,9 @@ const App = (() => {
       const r = await fetch("/api/prospeccao/varredura", { method: "POST" });
       const js = await r.json();
       if (!r.ok || js.ok === false) { toast(js.erro || "Falha na varredura."); return; }
-      toast(`Varredura: ${js.criados} nova(s) empresa(s) em ${js.buscas} busca(s).`);
+      toast(`Varredura: ${js.pendentes} novo(s) pendente(s) para revisar${js.ja_na_base ? ` · ${js.ja_na_base} já na base` : ""}.`);
       carregarCronStatus();
-      recarregar();
+      carregarPendentes();
     } finally {
       btn.disabled = false; btn.textContent = "Rodar varredura agora";
     }
@@ -796,6 +798,92 @@ const App = (() => {
     toast(`${js.criados} nova(s) salva(s)${js.duplicados ? ` · ${js.duplicados} já existia(m)` : ""}.`);
     renderProspecResults();
     recarregar();
+  }
+
+  // ==================== PROSPECÇÃO: pendentes da varredura ====================
+  // A varredura automática não entra mais direto na base: joga os achados aqui,
+  // numa fila de revisão. O usuário salva (vira empresa) ou descarta.
+  async function carregarPendentes() {
+    try { PEND = await (await fetch("/api/prospeccao/pendentes")).json(); }
+    catch (e) { PEND = []; }
+    if (!Array.isArray(PEND)) PEND = [];
+    renderPendentes();
+  }
+
+  function renderPendentes() {
+    const title = $("p-pend-title"), acts = $("p-pend-acts"), box = $("p-pend");
+    if (!box) return;
+    if (title) title.textContent = `Pendentes da varredura (${PEND.length})`;
+    if (acts) acts.style.display = PEND.length ? "flex" : "none";
+    if (!PEND.length) {
+      box.innerHTML = `<div class="empty">Nenhum pendente. Rode a varredura (ou aguarde a diária) para encontrar novas empresas.</div>`;
+      return;
+    }
+    const rows = PEND.map(p => {
+      const local = [cidadeCurta(p.cidade), p.uf].filter(Boolean).join(" · ") || "—";
+      const tel = p.whatsapp || p.telefone || "";
+      const links = [];
+      if (p.site) links.push(`<a href="${esc(p.site)}" target="_blank" rel="noopener">Site</a>`);
+      if (p.fonte) links.push(`<a href="${esc(p.fonte)}" target="_blank" rel="noopener">Maps</a>`);
+      return `
+      <tr>
+        <td class="c-nome">${esc(p.nome)}${p.tipo ? `<br><span class="hint">${esc(p.tipo)}</span>` : ""}</td>
+        <td>${esc(local)}</td>
+        <td class="c-tel">${tel ? esc(tel) : '<span class="hint">—</span>'}</td>
+        <td>${links.length ? links.join(" · ") : '<span class="hint">—</span>'}</td>
+        <td class="c-resp">${esc(formatarData(p.encontrado_em))}</td>
+        <td class="sp"></td>
+        <td class="pend-row-acts">
+          <button class="btn primary sm" onclick="App.salvarPendente(${p.id})">+ Salvar</button>
+          <button class="btn ghost danger sm" onclick="App.descartarPendente(${p.id})">Descartar</button>
+        </td>
+      </tr>`;
+    }).join("");
+    box.innerHTML = `<table class="tbl-emp tbl-pend"><thead><tr><th>Empresa</th><th>Cidade/UF</th><th>Contato</th><th>Links</th><th>Encontrada</th><th class="sp"></th><th>Ação</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  async function salvarPendente(id) {
+    const r = await fetch("/api/prospeccao/pendentes/salvar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [id] }),
+    });
+    const js = await r.json();
+    if (!r.ok) { toast(js.erro || "Falha ao salvar."); return; }
+    toast(js.criados ? "Empresa salva na base." : "Já estava na base (removida da fila).");
+    await carregarPendentes();
+    recarregar();
+  }
+
+  async function descartarPendente(id) {
+    const r = await fetch("/api/prospeccao/pendentes/descartar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: [id] }),
+    });
+    if (!r.ok) { toast("Falha ao descartar."); return; }
+    toast("Pendente descartado.");
+    carregarPendentes();
+  }
+
+  async function salvarTodosPendentes() {
+    if (!PEND.length) return;
+    if (!confirm(`Salvar na base ${PEND.length} empresa(s) pendente(s)?`)) return;
+    const r = await fetch("/api/prospeccao/pendentes/salvar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ todos: true }),
+    });
+    const js = await r.json();
+    if (!r.ok) { toast(js.erro || "Falha ao salvar."); return; }
+    toast(`${js.criados} salva(s) na base${js.duplicados ? ` · ${js.duplicados} já existia(m)` : ""}.`);
+    await carregarPendentes();
+    recarregar();
+  }
+
+  async function descartarTodosPendentes() {
+    if (!PEND.length) return;
+    if (!confirm(`Descartar TODOS os ${PEND.length} pendentes? Não afeta quem já está na base.`)) return;
+    const r = await fetch("/api/prospeccao/pendentes/descartar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ todos: true }),
+    });
+    if (!r.ok) { toast("Falha ao descartar."); return; }
+    toast("Fila de pendentes esvaziada.");
+    carregarPendentes();
   }
 
   // ==================== PROSPECÇÃO: mini-mapa dos resultados ====================
@@ -1190,6 +1278,7 @@ const App = (() => {
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, buscarProspec, salvarProspec, salvarTodosProspec,
     varreduraAgora,
+    salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
   };
 })();

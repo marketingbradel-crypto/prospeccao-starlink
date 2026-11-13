@@ -899,7 +899,7 @@ async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promi
   const obs: string[] = [];
   if (cand.fonte) obs.push(`Fonte: ${cand.fonte}`);
   if (cand.tipo) obs.push(`Tipo (Google): ${cand.tipo}`);
-  if (cand.auto) obs.push(`Encontrado pela varredura automática em ${hoje()}`);
+  if (cand.auto) obs.push(`Encontrado pela varredura automática em ${String(cand.encontrado_em || hoje()).slice(0, 10)}`);
   const e = montarEmpresa({
     razao_social: nome,
     nome_fantasia: nome,
@@ -1100,7 +1100,40 @@ function alvosCron(): { municipio: string; uf: string }[] {
   return out;
 }
 
-// Executa um lote da varredura a partir do cursor. Retorna estatisticas.
+// Staging da varredura: candidatos encontrados aguardam revisao manual antes de
+// entrar na base. Tabela criada sob demanda (resiliente a migracao nao aplicada).
+let pendentesPronta = false;
+async function ensurePendentes(db: D1Database): Promise<void> {
+  if (pendentesPronta) return;
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS varredura_pendentes (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       nome TEXT, tipo TEXT, endereco TEXT, cidade TEXT, uf TEXT,
+       telefone TEXT, whatsapp TEXT, site TEXT, fonte TEXT,
+       lat REAL, lng REAL, place_id TEXT, chave TEXT UNIQUE, encontrado_em TEXT)`
+  ).run();
+  pendentesPronta = true;
+}
+
+// Chave de dedup do pendente: telefone normalizado (>=8 digitos) OU nome+cidade.
+function chavePendente(nome: string, cidade: string, telefone: string): string {
+  const d = soDigitos(telefone);
+  if (d.length >= 8) return "tel:" + d;
+  return "nc:" + L.norm(nome) + "|" + L.norm(cidade);
+}
+
+// Reconstrui o objeto candidato a partir de uma linha da tabela de pendentes.
+function pendenteParaCandidato(row: Row): Row {
+  return {
+    nome: row.nome, tipo: row.tipo, endereco: row.endereco, cidade: row.cidade, uf: row.uf,
+    telefone: row.telefone, whatsapp: row.whatsapp, site: row.site, fonte: row.fonte,
+    lat: row.lat, lng: row.lng, place_id: row.place_id,
+    auto: true, encontrado_em: row.encontrado_em,
+  };
+}
+
+// Executa um lote da varredura a partir do cursor. Os achados vao para a tabela
+// de PENDENTES (nao direto na base) — o usuario revisa e aprova depois. Retorna estatisticas.
 async function runCron(env: Env): Promise<Row> {
   const db = env.DB;
   if (!fonteConfigurada(env)) {
@@ -1108,6 +1141,7 @@ async function runCron(env: Env): Promise<Row> {
   }
   const cidades = alvosCron();
   if (!cidades.length) return { ok: false, erro: "Sem cidades-alvo." };
+  await ensurePendentes(db);
 
   const cursor = parseInt((await metaGet(db, "cron_cursor")) || "0", 10) || 0;
   const lote: { municipio: string; uf: string }[] = [];
@@ -1116,7 +1150,7 @@ async function runCron(env: Env): Promise<Row> {
   }
 
   const idx = await baseIndex(db);
-  let criados = 0, duplicados = 0, excluidos = 0, buscas = 0, erros = 0;
+  let pendentes = 0, jaNaBase = 0, jaPendentes = 0, excluidos = 0, buscas = 0, erros = 0;
   for (const alvo of lote) {
     for (const termo of CRON_TERMOS) {
       buscas += 1;
@@ -1134,16 +1168,27 @@ async function runCron(env: Env): Promise<Row> {
         // Endereco curto do Serper as vezes nao traz cidade/UF: usa a cidade-alvo da varredura.
         if (!cand.cidade) cand.cidade = alvo.municipio;
         if (!cand.uf) cand.uf = alvo.uf;
-        cand.auto = true;
-        const r = await salvarCandidato(db, idx, cand);
-        if (r === "criado") criados += 1; else duplicados += 1;
+        // Ja esta na base? nao vira pendente.
+        if (achaDup(idx, cand.nome, cand.cidade, cand.telefone || "") !== null) { jaNaBase += 1; continue; }
+        // Insere como pendente; dedup por chave (INSERT OR IGNORE).
+        const chave = chavePendente(cand.nome, cand.cidade, cand.telefone || "");
+        const res = await db.prepare(
+          `INSERT OR IGNORE INTO varredura_pendentes
+             (nome,tipo,endereco,cidade,uf,telefone,whatsapp,site,fonte,lat,lng,place_id,chave,encontrado_em)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        ).bind(
+          cand.nome, cand.tipo || "", cand.endereco || "", cand.cidade || "", (cand.uf || "").toUpperCase(),
+          cand.telefone || "", cand.whatsapp || "", cand.site || "", cand.fonte || "",
+          cand.lat ?? null, cand.lng ?? null, cand.place_id || "", chave, agora()
+        ).run();
+        if (res.meta.changes) pendentes += 1; else jaPendentes += 1;
       }
     }
   }
 
   const novoCursor = (cursor + CRON_BATCH) % cidades.length;
   const stats: Row = {
-    ok: true, data: agora(), buscas, criados, duplicados, excluidos, erros,
+    ok: true, data: agora(), buscas, pendentes, ja_na_base: jaNaBase, ja_pendentes: jaPendentes, excluidos, erros,
     cidades: lote.map((a) => `${a.municipio}/${a.uf}`),
     cursor_de: cursor, cursor_ate: novoCursor, total_cidades: cidades.length,
   };
@@ -1152,8 +1197,8 @@ async function runCron(env: Env): Promise<Row> {
   await metaSet(db, "cron_last_stats", JSON.stringify(stats));
   console.log(
     `Cron prospecção: ${buscas} buscas em ${lote.length} cidades · ` +
-    `${criados} novos, ${duplicados} duplicados, ${excluidos} excluídos, ${erros} erros · ` +
-    `cursor ${cursor}→${novoCursor}/${cidades.length}`
+    `${pendentes} pendentes novos, ${jaNaBase} já na base, ${jaPendentes} já pendentes, ` +
+    `${excluidos} excluídos, ${erros} erros · cursor ${cursor}→${novoCursor}/${cidades.length}`
   );
   return stats;
 }
@@ -1179,6 +1224,65 @@ app.post("/api/prospeccao/varredura", async (c) => {
   }
   const stats = await runCron(c.env);
   return c.json(stats);
+});
+
+// GET /api/prospeccao/pendentes — lista os candidatos da varredura aguardando revisao.
+app.get("/api/prospeccao/pendentes", async (c) => {
+  await ensurePendentes(c.env.DB);
+  const uf = (limpar(c.req.query("uf")) || "").toString().toUpperCase();
+  const where = uf ? " WHERE uf=?" : "";
+  const sql = `SELECT * FROM varredura_pendentes${where} ORDER BY encontrado_em DESC, id DESC`;
+  const stmt = uf ? c.env.DB.prepare(sql).bind(uf) : c.env.DB.prepare(sql);
+  const { results } = await stmt.all<Row>();
+  return c.json(results ?? []);
+});
+
+// POST /api/prospeccao/pendentes/salvar  { ids?: number[], todos?: boolean }
+// Aprova os pendentes: insere na base (dedup por telefone/nome+cidade) e remove da fila.
+app.post("/api/prospeccao/pendentes/salvar", async (c) => {
+  await ensurePendentes(c.env.DB);
+  const body = await jsonBody(c);
+  const todos = body.todos === true;
+  const ids: number[] = Array.isArray(body.ids) ? body.ids.map((x: any) => Number(x)).filter(Number.isFinite) : [];
+  if (!todos && !ids.length) return c.json({ erro: "Informe os ids a salvar (ou todos:true)." }, 400);
+
+  const sql = todos
+    ? "SELECT * FROM varredura_pendentes ORDER BY encontrado_em DESC, id DESC"
+    : `SELECT * FROM varredura_pendentes WHERE id IN (${ids.map(() => "?").join(",")})`;
+  const stmt = todos ? c.env.DB.prepare(sql) : c.env.DB.prepare(sql).bind(...ids);
+  const { results } = await stmt.all<Row>();
+  const linhas = results ?? [];
+
+  const idx = await baseIndex(c.env.DB);
+  let criados = 0, duplicados = 0;
+  const removidos: number[] = [];
+  for (const row of linhas) {
+    const r = await salvarCandidato(c.env.DB, idx, pendenteParaCandidato(row));
+    if (r === "criado") criados += 1; else duplicados += 1;
+    removidos.push(row.id as number);
+  }
+  if (removidos.length) {
+    await c.env.DB.prepare(`DELETE FROM varredura_pendentes WHERE id IN (${removidos.map(() => "?").join(",")})`)
+      .bind(...removidos).run();
+  }
+  return c.json({ criados, duplicados, removidos: removidos.length });
+});
+
+// POST /api/prospeccao/pendentes/descartar  { ids?: number[], todos?: boolean }
+// Remove pendentes sem salvar na base.
+app.post("/api/prospeccao/pendentes/descartar", async (c) => {
+  await ensurePendentes(c.env.DB);
+  const body = await jsonBody(c);
+  const todos = body.todos === true;
+  const ids: number[] = Array.isArray(body.ids) ? body.ids.map((x: any) => Number(x)).filter(Number.isFinite) : [];
+  if (todos) {
+    await c.env.DB.prepare("DELETE FROM varredura_pendentes").run();
+    return c.json({ removidos: -1 });
+  }
+  if (!ids.length) return c.json({ erro: "Informe os ids a descartar (ou todos:true)." }, 400);
+  await c.env.DB.prepare(`DELETE FROM varredura_pendentes WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .bind(...ids).run();
+  return c.json({ removidos: ids.length });
 });
 
 // --------------------------------------------------------------------------
