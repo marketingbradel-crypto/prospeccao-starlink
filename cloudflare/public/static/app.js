@@ -22,6 +22,15 @@ const App = (() => {
   const hexCor = (cor) => (B && B.cor_hex[cor]) || "#9aa0ac";
   const corStatus = (st) => (B && B.status_cor[st]) || "cinza";
 
+  // Campo de cidade com mais de um município (vírgula, "/", ";" ou " e ") vira
+  // "<1ª cidade> e região" — ex.: "Imperatriz, Açailândia" → "Imperatriz e região".
+  const cidadeCurta = (cidade) => {
+    const raw = String(cidade ?? "").trim();
+    if (!raw) return "";
+    const partes = raw.split(/\s*[,;/]\s*|\s+e\s+/i).map(s => s.trim()).filter(Boolean);
+    return partes.length > 1 ? `${partes[0]} e região` : raw;
+  };
+
   // -------- formulário de empresa (geração automática) --------
   const FORM = [
     { t: "Dados da empresa", f: [
@@ -474,7 +483,7 @@ const App = (() => {
       const fxHex = (B && B.faixa_hex && B.faixa_hex[fx]) || "#9aa0ac";
       const fxCurta = fx ? fx.replace(" vendas/mês", "") : "—";
       const venda = e.ja_vendeu ? `<span class="tag-venda" title="Já fez venda">✓</span>` : "";
-      const local = [e.cidade, e.uf].filter(Boolean).join(" · ") || "—";
+      const local = [cidadeCurta(e.cidade), e.uf].filter(Boolean).join(" · ") || "—";
       const tel = e.whatsapp || e.telefone_comercial || "";
       const seg = e.segmento || "—";
       const resp = e.responsavel || "—";
@@ -487,9 +496,10 @@ const App = (() => {
         <td><span class="badge"><span class="d" style="background:${e.cor_hex}"></span>${esc(e.status || "")}</span></td>
         <td class="c-tel">${tel ? esc(tel) : '<span class="hint">—</span>'}</td>
         <td class="c-resp">${esc(resp)}</td>
+        <td class="sp"></td>
       </tr>`;
     }).join("");
-    $("lista").innerHTML = `<table class="tbl-emp"><thead><tr><th>Empresa</th><th>Cidade/UF</th><th>Segmento</th><th>Potencial</th><th>Status</th><th>Contato</th><th>Responsável</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $("lista").innerHTML = `<table class="tbl-emp"><thead><tr><th>Empresa</th><th>Cidade/UF</th><th>Segmento</th><th>Potencial</th><th>Status</th><th>Contato</th><th>Responsável</th><th class="sp"></th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function realce(id, on) {
