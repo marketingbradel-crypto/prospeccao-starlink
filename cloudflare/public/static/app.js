@@ -22,14 +22,30 @@ const App = (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const hexCor = (cor) => (B && B.cor_hex[cor]) || "#9aa0ac";
   const corStatus = (st) => (B && B.status_cor[st]) || "cinza";
+  const norm = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
 
-  // Campo de cidade com mais de um município (vírgula, "/", ";" ou " e ") vira
-  // "<1ª cidade> e região" — ex.: "Imperatriz, Açailândia" → "Imperatriz e região".
+  let MUNI_NORMS = []; // municípios conhecidos (normalizados), do mais longo p/ o mais curto
+
+  // Campo de cidade com mais de um município vira "<1ª cidade> e região". Reconhece
+  // separadores explícitos (vírgula, "/", ";", " e ") e também listas coladas por
+  // espaço (ex.: "Imperatriz Açailândia São Francisco…"), achando a 1ª cidade conhecida.
   const cidadeCurta = (cidade) => {
     const raw = String(cidade ?? "").trim();
     if (!raw) return "";
     const partes = raw.split(/\s*[,;/]\s*|\s+e\s+/i).map(s => s.trim()).filter(Boolean);
-    return partes.length > 1 ? `${partes[0]} e região` : raw;
+    if (partes.length > 1) return `${partes[0]} e região`;
+    // Lista de municípios separada por espaço: casa a 1ª cidade conhecida (prefixo).
+    const nraw = norm(raw);
+    if (MUNI_NORMS.length && nraw.includes(" ")) {
+      for (const m of MUNI_NORMS) {           // ordenado do mais longo p/ o mais curto
+        if (nraw === m) break;                // é exatamente uma cidade conhecida
+        if (nraw.startsWith(m + " ")) {       // começa com cidade conhecida e há mais → colapsa
+          const nw = m.split(" ").length;
+          return raw.split(/\s+/).slice(0, nw).join(" ") + " e região";
+        }
+      }
+    }
+    return raw;
   };
 
   // -------- formulário de empresa (geração automática) --------
@@ -87,8 +103,22 @@ const App = (() => {
     B = await (await fetch("/api/bootstrap")).json();
     try { OUTLINES = await (await fetch("/static/state-outlines.json")).json(); } catch (e) { OUTLINES = {}; }
     montarFiltros();
+    await carregarMunicipios();
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
+  }
+
+  // Carrega os municípios das UFs de atuação (p/ reconhecer a 1ª cidade em campos
+  // com vários municípios). Guarda normalizado e ordenado do mais longo p/ o mais curto.
+  async function carregarMunicipios() {
+    try {
+      const listas = await Promise.all(
+        B.ufs.map(u => fetch("/api/municipios?uf=" + encodeURIComponent(u)).then(r => r.json()))
+      );
+      const set = new Set();
+      listas.forEach(l => (l || []).forEach(m => { const n = norm(m.municipio); if (n) set.add(n); }));
+      MUNI_NORMS = [...set].sort((a, b) => b.length - a.length);
+    } catch (e) { MUNI_NORMS = []; }
   }
 
   function selOpts(lista, vazio) {
@@ -491,7 +521,7 @@ const App = (() => {
       return `
       <tr onclick="App.abrirFicha(${e.id})" onmouseenter="App.realce(${e.id},1)" onmouseleave="App.realce(${e.id},0)">
         <td class="c-nome">${esc(e.nome_fantasia || e.razao_social)} ${venda}</td>
-        <td>${esc(local)}</td>
+        <td class="c-loc" title="${esc(e.cidade || "")}">${esc(local)}</td>
         <td class="c-seg">${esc(seg)}</td>
         <td><span class="pill-faixa sm" style="--pc:${fxHex}"><span class="d" style="background:${fxHex}"></span>${esc(fxCurta)}</span></td>
         <td><span class="badge"><span class="d" style="background:${e.cor_hex}"></span>${esc(e.status || "")}</span></td>
@@ -828,7 +858,7 @@ const App = (() => {
       return `
       <tr>
         <td class="c-nome">${esc(p.nome)}${p.tipo ? `<br><span class="hint">${esc(p.tipo)}</span>` : ""}</td>
-        <td>${esc(local)}</td>
+        <td class="c-loc" title="${esc(p.cidade || "")}">${esc(local)}</td>
         <td class="c-tel">${tel ? esc(tel) : '<span class="hint">—</span>'}</td>
         <td>${links.length ? links.join(" · ") : '<span class="hint">—</span>'}</td>
         <td class="c-resp">${esc(formatarData(p.encontrado_em))}</td>

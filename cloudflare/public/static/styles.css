@@ -153,6 +153,8 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 /* Tabela larga de empresas: nome pode quebrar; demais colunas compactas. */
 .tbl-emp td.c-nome{white-space:normal;font-weight:600;min-width:200px;max-width:320px}
 .tbl-emp td.c-seg{color:var(--muted);white-space:normal;max-width:220px}
+/* Local: teto de largura + reticencias (evita campo esticado com lista de cidades). */
+.tbl-emp td.c-loc{max-width:240px;overflow:hidden;text-overflow:ellipsis}
 .tbl-emp td.c-tel{font-family:var(--fnum);font-variant-numeric:tabular-nums}
 .tbl-emp td.c-resp{color:var(--muted)}
 /* Coluna de folga: absorve o espaco sobrando p/ as colunas ficarem compactas (sem vao). */
