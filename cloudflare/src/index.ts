@@ -688,12 +688,22 @@ app.get("/api/dashboard", async (c) => {
     cred_venda: { dias: media(sCredVenda, nCredVenda), n: nCredVenda },
   };
 
+  // Cobertura VSM: mapeadas (por_uf) vs universo de revendas no portal Vivensis.
+  const coberturaVsm = L.UFS.map((u) => {
+    const universo = L.UNIVERSO_VSM[u] ?? 0;
+    const mapeadas = porUf[u] ?? 0;
+    const pct = universo ? Math.round((1000.0 * mapeadas) / universo) / 10 : 0.0;
+    return { uf: u, mapeadas, universo, pct };
+  });
+  const universoVsmTotal = L.UFS.reduce((s, u) => s + (L.UNIVERSO_VSM[u] ?? 0), 0);
+
   return c.json({
     total, potenciais, credenciados, em_negociacao: emNegociacao, aguardando, perdidos,
     municipios: municipios.size, microrregioes: microrregioes.size,
     taxa_conversao: taxa, por_status: porStatus, por_uf: porUf, por_segmento: porSegmentoOrd,
     serie_mensal: serieMensal, tempos_funil: temposFunil,
     por_faixa: porFaixa, sem_faixa: semFaixa, ja_venderam: jaVenderam,
+    cobertura_vsm: coberturaVsm, universo_vsm_total: universoVsmTotal,
   });
 });
 

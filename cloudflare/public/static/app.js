@@ -474,14 +474,22 @@ const App = (() => {
       const fxHex = (B && B.faixa_hex && B.faixa_hex[fx]) || "#9aa0ac";
       const fxCurta = fx ? fx.replace(" vendas/mês", "") : "—";
       const venda = e.ja_vendeu ? `<span class="tag-venda" title="Já fez venda">✓</span>` : "";
+      const local = [e.cidade, e.uf].filter(Boolean).join(" · ") || "—";
+      const tel = e.whatsapp || e.telefone_comercial || "";
+      const seg = e.segmento || "—";
+      const resp = e.responsavel || "—";
       return `
       <tr onclick="App.abrirFicha(${e.id})" onmouseenter="App.realce(${e.id},1)" onmouseleave="App.realce(${e.id},0)">
-        <td>${esc(e.nome_fantasia || e.razao_social)} ${venda}<br><span class="hint">${esc(e.cidade || "")}${e.uf ? " · " + e.uf : ""}</span></td>
+        <td class="c-nome">${esc(e.nome_fantasia || e.razao_social)} ${venda}</td>
+        <td>${esc(local)}</td>
+        <td class="c-seg">${esc(seg)}</td>
         <td><span class="pill-faixa sm" style="--pc:${fxHex}"><span class="d" style="background:${fxHex}"></span>${esc(fxCurta)}</span></td>
         <td><span class="badge"><span class="d" style="background:${e.cor_hex}"></span>${esc(e.status || "")}</span></td>
+        <td class="c-tel">${tel ? esc(tel) : '<span class="hint">—</span>'}</td>
+        <td class="c-resp">${esc(resp)}</td>
       </tr>`;
     }).join("");
-    $("lista").innerHTML = `<table><thead><tr><th>Empresa</th><th>Potencial</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $("lista").innerHTML = `<table class="tbl-emp"><thead><tr><th>Empresa</th><th>Cidade/UF</th><th>Segmento</th><th>Potencial</th><th>Status</th><th>Contato</th><th>Responsável</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function realce(id, on) {
@@ -510,6 +518,18 @@ const App = (() => {
       `<div class="row"><span class="lbl" title="${esc(lbl)}">${esc(lbl)}</span>
         <span class="track"><span class="fill" style="width:${Math.round(v / max * 100)}%;background:${corFn(lbl)}"></span></span>
         <span class="val">${v}</span></div>`).join("") + `</div>`;
+  }
+
+  // Cobertura VSM: barra por estado com mapeadas / universo (revendas no portal Vivensis).
+  function chartCobertura(cob) {
+    if (!cob || !cob.length) return '<div class="empty">Sem universo VSM configurado.</div>';
+    const corPct = p => p >= 80 ? hexCor("verde") : p >= 40 ? hexCor("amarelo") : hexCor("laranja");
+    return `<div class="chart">` + cob.map(c => {
+      const nome = (B.uf_nomes && B.uf_nomes[c.uf]) || c.uf;
+      return `<div class="row"><span class="lbl" title="${esc(nome)}">${esc(c.uf)}</span>
+        <span class="track"><span class="fill" style="width:${Math.min(100, c.pct)}%;background:${corPct(c.pct)}"></span></span>
+        <span class="val" title="${c.mapeadas} de ${c.universo} revendas do VSM mapeadas">${c.mapeadas}/${c.universo} · ${c.pct}%</span></div>`;
+    }).join("") + `</div>`;
   }
 
   // Rotulo curto do mes "YYYY-MM" -> "abr/26".
@@ -567,6 +587,10 @@ const App = (() => {
       </div></div>
       <div class="card"><div class="hd"><h2>Por status comercial</h2></div><div class="bd">${statusData.length ? chart(statusData, l => hexCor(corStatus(l))) : '<div class="empty">Sem dados.</div>'}</div></div>
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
+      <div class="card"><div class="hd"><h2>Cobertura VSM por estado</h2></div><div class="bd">
+        ${chartCobertura(d.cobertura_vsm)}
+        <div class="l" style="opacity:.7;margin-top:8px">${d.total} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas no total.</div>
+      </div></div>
       <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Funil de conversão</h2></div><div class="bd">

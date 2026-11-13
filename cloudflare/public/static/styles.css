@@ -63,9 +63,12 @@ h3,h4{margin:0}
 
 /* ---------- Layout mapa ---------- */
 main{padding:14px 20px 28px}
-.view-mapa{display:grid;grid-template-columns:260px minmax(0,1fr) 370px;gap:14px;align-items:start}
-@media(max-width:1250px){.view-mapa{grid-template-columns:230px minmax(0,1fr) 320px}}
-@media(max-width:1000px){.view-mapa{grid-template-columns:1fr}}
+/* Topo: filtros/ranking (esq.) + mapa (dir.). Empresas ocupa a largura toda embaixo. */
+.view-mapa{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start}
+.view-mapa .map-card{grid-column:2}
+.view-mapa .list-card{grid-column:1/-1}
+@media(max-width:1250px){.view-mapa{grid-template-columns:230px minmax(0,1fr)}}
+@media(max-width:1000px){.view-mapa{grid-template-columns:1fr}.view-mapa .map-card,.view-mapa .list-card{grid-column:auto}}
 .col-left{display:flex;flex-direction:column;gap:14px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
 .card .hd{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
@@ -145,16 +148,21 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .tip .r{display:flex;justify-content:space-between;gap:12px;color:var(--muted)}
 .tip .num{font-family:var(--fnum);color:var(--fg)}
 
-/* ---------- Lista ---------- */
-.list-card{display:flex;flex-direction:column;max-height:calc(70vh + 150px)}
+/* ---------- Lista (tabela larga, largura total abaixo do mapa) ---------- */
+.list-card{display:flex;flex-direction:column}
 .listsearch{padding:10px 14px;border-bottom:1px solid var(--line)}
-.listsearch input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
-.lista{overflow:auto;flex:1}
+.listsearch input{width:100%;max-width:420px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
+.lista{overflow:auto;max-height:62vh}
 .lista table{width:100%;border-collapse:collapse;font-size:13.5px}
-.lista th{text-align:left;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:8px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
-.lista td{padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+.lista th{text-align:left;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:8px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1}
+.lista td{padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap}
 .lista tr{cursor:pointer}
 .lista tbody tr:hover td{background:var(--accent-weak)}
+/* Tabela larga de empresas: nome pode quebrar; demais colunas compactas. */
+.tbl-emp td.c-nome{white-space:normal;font-weight:600;min-width:200px;max-width:320px}
+.tbl-emp td.c-seg{color:var(--muted);white-space:normal;max-width:220px}
+.tbl-emp td.c-tel{font-family:var(--fnum);font-variant-numeric:tabular-nums}
+.tbl-emp td.c-resp{color:var(--muted)}
 .hint{color:var(--muted);font-size:11.5px}
 .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;white-space:nowrap}
 .badge .d{width:9px;height:9px;border-radius:50%;flex:none}

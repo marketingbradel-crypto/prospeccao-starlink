@@ -4,6 +4,16 @@
 // UFs de atuacao da Bradel (Starlink)
 export const UFS = ["PA", "TO", "MA", "GO"];
 
+// Universo VSM (portal Vivensis): total de revendas Starlink existentes por estado.
+// Referencia para medir cobertura (quanto do universo ja foi mapeado no painel).
+// Atualizar conforme nova extracao do VSM. Fonte: VSM, informado em 2026-11-13.
+export const UNIVERSO_VSM: Record<string, number> = {
+  GO: 220,
+  MA: 170,
+  PA: 287,
+  TO: 120,
+};
+
 // Classificacao comercial — pipeline principal (9 valores do brief)
 export const STATUS = [
   "Prospectado",
