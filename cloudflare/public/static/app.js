@@ -134,7 +134,7 @@ const App = (() => {
     if (uf && !GEOUF[uf]) tasks.push(fetch("/api/geo/" + encodeURIComponent(uf)).then(r => r.json()).then(g => { GEOUF[uf] = g; }));
     const [emp, mp, dsh] = await Promise.all(tasks);
     EMPRESAS = emp; MAP = mp; DASH = dsh;
-    renderKPIs(); renderMapa(); renderLista(); renderRanking();
+    renderKPIs(); renderMapa(); renderLista();
     if (!$("view-painel").classList.contains("hidden")) renderPainel();
   }
 
@@ -495,20 +495,6 @@ const App = (() => {
   function realce(id, on) {
     const c = $("mapa").querySelector(`circle.mk[data-id="${id}"]`);
     if (c) c.classList.toggle("hot", !!on);
-  }
-
-  // ==================== RANKING ====================
-  function renderRanking() {
-    const arr = Object.values(MAP.regioes).sort((a, b) => b.count - a.count).slice(0, 12);
-    if (!arr.length) { $("ranking").innerHTML = `<div class="empty">Sem dados.</div>`; return; }
-    const max = arr[0].count || 1;
-    $("ranking").innerHTML = arr.map(a => `
-      <div class="row">
-        <span class="uf">${a.uf}</span>
-        <span class="nm">${esc(a.microrregiao || "—")}</span>
-        <span class="track" style="flex:0 0 110px"><span class="bar" style="width:${Math.round(a.count / max * 100)}%"></span></span>
-        <span class="n">${a.count}</span>
-      </div>`).join("");
   }
 
   // ==================== PAINEL (dashboard) ====================

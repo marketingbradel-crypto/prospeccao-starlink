@@ -63,7 +63,7 @@ h3,h4{margin:0}
 
 /* ---------- Layout mapa ---------- */
 main{padding:14px 20px 28px}
-/* Topo: filtros/ranking (esq.) + mapa (dir.). Empresas ocupa a largura toda embaixo. */
+/* Topo: filtros (esq.) + mapa (dir.). Empresas ocupa a largura toda embaixo. */
 .view-mapa{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start}
 .view-mapa .map-card{grid-column:2}
 .view-mapa .list-card{grid-column:1/-1}
@@ -83,14 +83,6 @@ main{padding:14px 20px 28px}
 .chk2{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-top:1px}
 .chk2 input{width:16px;height:16px;accent-color:var(--accent)}
 
-/* ---------- Ranking ---------- */
-.ranking{display:flex;flex-direction:column;gap:7px}
-.ranking .row{display:flex;align-items:center;gap:8px;font-size:12.5px}
-.ranking .uf{font-family:var(--fnum);font-size:10.5px;font-weight:700;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:1px 4px;flex:none}
-.ranking .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ranking .track{background:var(--soft);border-radius:5px;height:8px;overflow:hidden}
-.ranking .bar{display:block;height:100%;background:var(--accent);border-radius:5px}
-.ranking .n{font-family:var(--fnum);font-variant-numeric:tabular-nums;color:var(--muted);flex:none;width:30px;text-align:right}
 .empty{padding:24px 10px;text-align:center;color:var(--muted);font-size:13px}
 
 /* ---------- Mapa ---------- */
