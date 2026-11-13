@@ -124,6 +124,70 @@ export function corDoStatus(status: string): string {
   return STATUS_COR[(status || "").trim()] ?? "cinza";
 }
 
+// --------------------------------------------------------------------------
+// Pre-classificacao automatica da FAIXA DE POTENCIAL a partir dos sinais ja
+// preenchidos na ficha. E apenas uma SUGESTAO (o vendedor confirma/ajusta) —
+// nunca sobrescreve a faixa definida manualmente. Transparente: devolve os
+// "motivos" para o usuario entender de onde veio a sugestao.
+// --------------------------------------------------------------------------
+function ehVerdadeiro(v: any): boolean {
+  return v === 1 || v === "1" || v === true;
+}
+
+// Extrai o primeiro numero de um texto de capacidade ("30 a 50" -> 30; "ate 100" -> 100).
+export function parseCapacidade(txt: any): number | null {
+  const m = /(\d+)/.exec(String(txt ?? ""));
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function faixaPorNumero(n: number): string {
+  if (n >= 100) return "100+ vendas/mês";
+  if (n >= 80) return "80+ vendas/mês";
+  if (n >= 50) return "50+ vendas/mês";
+  if (n >= 30) return "30+ vendas/mês";
+  return "10+ vendas/mês";
+}
+
+export function sugerirFaixa(
+  e: Record<string, any>
+): { faixa: string; score: number; motivos: string[] } | null {
+  const motivos: string[] = [];
+  let score = 0;
+  const seg = String(e.segmento || "");
+
+  if (/telecom|provedor|isp/i.test(seg)) { score += 3; motivos.push("provedor / telecom"); }
+  else if (/inform|eletr[oô]nic/i.test(seg)) { score += 1; motivos.push("loja de informática"); }
+  else if (/solar/i.test(seg)) { score += 1; motivos.push("energia solar"); }
+  else if (/seguran/i.test(seg)) { score += 1; motivos.push("segurança eletrônica"); }
+
+  if (ehVerdadeiro(e.trabalha_telecom)) { score += 2; motivos.push("trabalha com telecom"); }
+  if (ehVerdadeiro(e.equipe_tecnica)) { score += 1; motivos.push("equipe técnica"); }
+  if (ehVerdadeiro(e.exp_antenas)) { score += 1; motivos.push("experiência com antenas"); }
+  if (ehVerdadeiro(e.ja_starlink)) { score += 1; motivos.push("já vende Starlink"); }
+  if (ehVerdadeiro(e.loja_fisica)) { score += 1; motivos.push("loja física"); }
+
+  const filiais = parseInt(String(e.qtd_filiais ?? "0"), 10) || 0;
+  if (filiais >= 3) { score += 3; motivos.push(`${filiais} filiais`); }
+  else if (filiais === 2) { score += 2; motivos.push("2 filiais"); }
+  else if (filiais === 1) { score += 1; motivos.push("1 filial"); }
+
+  const cap = parseCapacidade(e.capacidade_vendas_mes);
+  let faixa: string;
+  if (cap != null) {
+    faixa = faixaPorNumero(cap);
+    motivos.unshift(`capacidade informada: ${cap}/mês`);
+  } else {
+    faixa = score >= 8 ? "100+ vendas/mês"
+          : score >= 6 ? "80+ vendas/mês"
+          : score >= 4 ? "50+ vendas/mês"
+          : score >= 2 ? "30+ vendas/mês"
+          : "10+ vendas/mês";
+  }
+
+  if (!motivos.length) return null; // sem sinais suficientes para sugerir
+  return { faixa, score, motivos };
+}
+
 // Normaliza string: remove acentos, minuscula, trim (equivalente a listas.norm no Python).
 export function norm(s: string): string {
   return (s || "")

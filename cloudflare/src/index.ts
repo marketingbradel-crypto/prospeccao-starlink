@@ -454,6 +454,7 @@ app.get("/api/empresas/:eid{[0-9]+}", async (c) => {
     .prepare("SELECT * FROM contatos WHERE empresa_id=? ORDER BY data DESC, id DESC").bind(eid).all<Row>();
   e.filiais = filiais.results ?? [];
   e.contatos = contatos.results ?? [];
+  e.faixa_sugerida = L.sugerirFaixa(e); // sugestao de potencial (null se sem sinais)
   return c.json(e);
 });
 
@@ -503,6 +504,17 @@ app.patch("/api/empresas/:eid{[0-9]+}/status", async (c) => {
       .bind(novo, agora(), eid).run();
   }
   return c.json({ id: eid, status: novo, cor: L.corDoStatus(novo) });
+});
+
+// Aplica a faixa de potencial (usado pelo botao "usar sugestao"). "" limpa a faixa.
+app.patch("/api/empresas/:eid{[0-9]+}/faixa", async (c) => {
+  const eid = Number(c.req.param("eid"));
+  const data = await jsonBody(c);
+  const faixa = limpar(data.faixa_potencial) || "";
+  if (faixa && !L.FAIXAS_POTENCIAL.includes(faixa)) return c.json({ erro: "Faixa inválida." }, 400);
+  await c.env.DB.prepare("UPDATE empresas SET faixa_potencial=?, atualizado_em=? WHERE id=?")
+    .bind(faixa || null, agora(), eid).run();
+  return c.json({ id: eid, faixa_potencial: faixa });
 });
 
 // ---- contatos ----
@@ -708,6 +720,89 @@ app.get("/api/dashboard", async (c) => {
 });
 
 // --------------------------------------------------------------------------
+// Follow-up / Monitoramento — "o que fazer hoje"
+// Agrupa os prospects ATIVOS (nao credenciados nem descartados) em:
+//   vencidas  — proxima acao com data no passado
+//   hoje      — proxima acao marcada para hoje
+//   proximas  — proxima acao nos proximos 7 dias
+//   parados   — sem proxima acao marcada e frios (sem contato ha 14+ dias)
+// Campos usados ja existem na tabela empresas (proxima_acao, proxima_acao_data,
+// data_ultimo_contato). Nada de novo no schema.
+// --------------------------------------------------------------------------
+const STATUS_FOLLOWUP_FECHADO = new Set(["Credenciado", "Não interessado"]);
+const FOLLOWUP_FRIO_DIAS = 14; // sem contato ha N dias (e sem acao marcada) => "parado"
+
+// Diferenca COM SINAL em dias entre duas datas "YYYY-MM-DD" (b - a). NaN se invalida.
+// (diasEntre existente zera negativos; aqui precisamos do sinal p/ detectar atraso.)
+function diasSinal(aISO: string, bISO: string): number {
+  const ra = /^\d{4}-\d{2}-\d{2}/.exec((aISO || "").trim());
+  const rb = /^\d{4}-\d{2}-\d{2}/.exec((bISO || "").trim());
+  if (!ra || !rb) return NaN;
+  const a = Date.parse(ra[0] + "T00:00:00Z");
+  const b = Date.parse(rb[0] + "T00:00:00Z");
+  if (isNaN(a) || isNaN(b)) return NaN;
+  return Math.round((b - a) / 86400000);
+}
+
+app.get("/api/follow-up", async (c) => {
+  const hojeStr = hoje();
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
+            telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
+            data_ultimo_contato, faixa_potencial
+       FROM empresas`
+  ).all<Row>();
+
+  const vencidas: Row[] = [], hojeList: Row[] = [], proximas: Row[] = [], parados: Row[] = [];
+  for (const r of results ?? []) {
+    if (STATUS_FOLLOWUP_FECHADO.has(String(r.status || ""))) continue;
+    const nome = r.nome_fantasia || r.razao_social || "(sem nome)";
+    const pad = String(r.proxima_acao_data || "").slice(0, 10);
+    const base: Row = {
+      id: r.id, nome, cidade: r.cidade, uf: r.uf, status: r.status,
+      responsavel: r.responsavel, prioridade: r.prioridade,
+      telefone: r.telefone_comercial || "", whatsapp: r.whatsapp || "",
+      proxima_acao: r.proxima_acao || "", proxima_acao_data: pad,
+      data_ultimo_contato: String(r.data_ultimo_contato || "").slice(0, 10),
+      faixa_potencial: r.faixa_potencial || "",
+    };
+    if (pad) {
+      const d = diasSinal(hojeStr, pad); // <0 vencida, 0 hoje, >0 futura
+      if (isNaN(d)) continue;
+      if (d < 0) { base.dias_atraso = -d; vencidas.push(base); }
+      else if (d === 0) { hojeList.push(base); }
+      else if (d <= 7) { base.dias_para = d; proximas.push(base); }
+    } else {
+      // Sem acao marcada: entra em "parados" se nunca contatado ou frio (14+ dias sem contato).
+      const uc = base.data_ultimo_contato;
+      if (!uc) {
+        base.dias_sem_contato = null; // nunca contatado
+        parados.push(base);
+      } else {
+        const dsc = diasEntre(uc, hojeStr); // number | null (null = data futura/invalida)
+        if (dsc !== null && dsc >= FOLLOWUP_FRIO_DIAS) {
+          base.dias_sem_contato = dsc;
+          parados.push(base);
+        }
+      }
+    }
+  }
+
+  const peso: Record<string, number> = { Alta: 0, "Média": 1, Baixa: 2 };
+  vencidas.sort((a, b) => (b.dias_atraso || 0) - (a.dias_atraso || 0));
+  proximas.sort((a, b) => (a.dias_para || 0) - (b.dias_para || 0));
+  parados.sort((a, b) => (b.dias_sem_contato ?? 9999) - (a.dias_sem_contato ?? 9999));
+  hojeList.sort((a, b) => (peso[a.prioridade] ?? 3) - (peso[b.prioridade] ?? 3));
+
+  return c.json({
+    hoje: hojeStr,
+    total: vencidas.length + hojeList.length + proximas.length + parados.length,
+    vencidas, hoje_list: hojeList, proximas, parados,
+    contagem: { vencidas: vencidas.length, hoje: hojeList.length, proximas: proximas.length, parados: parados.length },
+  });
+});
+
+// --------------------------------------------------------------------------
 // Prospeccao Starlink — busca na web (Google Places) + salvar na base
 // --------------------------------------------------------------------------
 // Grandes redes e distribuidoras generalistas a excluir dos resultados.
@@ -871,6 +966,93 @@ async function serperBuscar(key: string, textQuery: string): Promise<Row[]> {
   });
 }
 
+// --------------------------------------------------------------------------
+// Busca em REDES SOCIAIS (Instagram / Facebook) via Serper Web Search (/search).
+// O endpoint /places so traz o Google Maps; perfis sociais aparecem na busca
+// web organica. Filtramos os resultados cujo link e de instagram/facebook e os
+// normalizamos no mesmo formato de candidato (vao para a mesma fila de revisao).
+// So funciona com SERPER_API_KEY (o Google Places nao faz busca web).
+// --------------------------------------------------------------------------
+function hostDe(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, "").toLowerCase(); } catch { return ""; }
+}
+
+function redeDoLink(url: string): string {
+  const h = hostDe(url);
+  if (h.includes("instagram.com")) return "Instagram";
+  if (h.includes("facebook.com") || h.includes("fb.com")) return "Facebook";
+  return "";
+}
+
+// URLs sociais genericas (nao sao perfil de uma empresa) — descartadas.
+function linkSocialGenerico(url: string): boolean {
+  const u = (url || "").toLowerCase();
+  return /instagram\.com\/(explore|p\/|reel|reels|tags|accounts|about|directory)/.test(u)
+      || /facebook\.com\/(pages\/category|events|groups|watch|marketplace|help|login|sharer|policies|business)/.test(u);
+}
+
+// Extrai o @handle do perfil social a partir do link, quando houver.
+function handleSocial(url: string): string {
+  try {
+    const seg = new URL(url).pathname.split("/").filter(Boolean)[0] || "";
+    return seg && !["p", "reel", "reels", "explore"].includes(seg.toLowerCase()) ? "@" + seg : "";
+  } catch { return ""; }
+}
+
+// Limpa o titulo do resultado social ("Loja X (@lojax) • Instagram photos..." -> "Loja X").
+function limpaTituloSocial(titulo: string): string {
+  let t = titulo || "";
+  t = t.split("•")[0];                                    // "... • Instagram ..."
+  t = t.split("|")[0];                                    // "... | Facebook"
+  t = t.replace(/\(@[^)]+\)/g, "");                       // remove (@handle)
+  t = t.replace(/\s*[-–—]\s*(Instagram|Facebook).*$/i, "");
+  t = t.replace(/\s+(on|no|em)\s+Instagram.*$/i, "");
+  t = t.replace(/\s+(on|no|em)\s+Facebook.*$/i, "");
+  return t.trim();
+}
+
+async function serperWebBuscar(key: string, q: string): Promise<any[]> {
+  const resp = await fetch("https://google.serper.dev/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-KEY": key },
+    body: JSON.stringify({ q, gl: "br", hl: "pt-br", num: 20 }),
+  });
+  const data: any = await resp.json();
+  if (!resp.ok) throw new Error(data?.message || `Erro ${resp.status} na busca web do Serper.`);
+  return data.organic ?? [];
+}
+
+// Busca perfis de empresa em redes sociais. Retorna candidatos no formato comum.
+// cidade/uf vem do contexto da busca (o resultado social raramente traz endereco).
+async function buscarSocial(env: Env, termo: string, cidade: string, mr: string, uf: string): Promise<Row[]> {
+  if (!env.SERPER_API_KEY) return []; // redes sociais so via Serper (busca web)
+  const ufNome = uf ? (geo.estado(uf)?.nome ?? uf) : "";
+  const local = [cidade, mr, ufNome].filter(Boolean).join(" ");
+  const base = termo || "Starlink revenda loja internet via satélite";
+  const q = `${base} ${local} (site:instagram.com OR site:facebook.com)`.trim();
+  const organicos = await serperWebBuscar(env.SERPER_API_KEY, q);
+  const out: Row[] = [];
+  const vistos = new Set<string>();
+  for (const o of organicos) {
+    const link = o.link || "";
+    const rede = redeDoLink(link);
+    if (!rede) continue;
+    if (linkSocialGenerico(link)) continue;
+    const nome = limpaTituloSocial(o.title || "");
+    if (!nome) continue;
+    const chave = link.split("?")[0].toLowerCase();
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+    out.push({
+      place_id: "", nome, tipo: rede, endereco: "", cidade, uf,
+      telefone: "", whatsapp: "", cnpj: "",
+      site: link, fonte: link, rede, handle: handleSocial(link),
+      lat: null, lng: null,
+    });
+  }
+  return out;
+}
+
 // Despacha para a fonte configurada: Serper tem precedencia; senao Google Places.
 // Retorna candidatos ja normalizados no formato comum. Lanca se nenhuma chave existir.
 async function buscarFonte(env: Env, textQuery: string): Promise<{ provider: string; candidatos: Row[] }> {
@@ -897,8 +1079,9 @@ async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promi
   const telefone = limpar(cand.telefone) || "";
   if (achaDup(idx, nome, cidade, telefone) !== null) return "dup";
   const obs: string[] = [];
+  if (cand.rede) obs.push(`Rede social: ${cand.rede}${cand.handle ? ` (${cand.handle})` : ""}`);
   if (cand.fonte) obs.push(`Fonte: ${cand.fonte}`);
-  if (cand.tipo) obs.push(`Tipo (Google): ${cand.tipo}`);
+  if (cand.tipo && !cand.rede) obs.push(`Categoria: ${cand.tipo}`);
   if (cand.auto) obs.push(`Encontrado pela varredura automática em ${String(cand.encontrado_em || hoje()).slice(0, 10)}`);
   const e = montarEmpresa({
     razao_social: nome,
@@ -979,11 +1162,26 @@ app.get("/api/busca-places", async (c) => {
   const cidade = (limpar(c.req.query("cidade")) || "").toString();
   const mr = (limpar(c.req.query("microrregiao")) || "").toString();
   const termo = (limpar(c.req.query("termo")) || "").toString();
+  const escopo = ((limpar(c.req.query("escopo")) || "maps").toString().toLowerCase()); // maps | social | ambos
   const textQuery = montarTextQuery(termo, cidade, mr, uf);
 
-  let candidatos: Row[];
+  // Redes sociais exigem Serper (busca web). Avisa se o usuario pediu social sem Serper.
+  if ((escopo === "social" || escopo === "ambos") && !c.env.SERPER_API_KEY) {
+    if (escopo === "social") {
+      return c.json({ erro: "Busca em redes sociais exige a chave SERPER_API_KEY." }, 503);
+    }
+  }
+
+  let candidatos: Row[] = [];
   try {
-    ({ candidatos } = await buscarFonte(c.env, textQuery));
+    if (escopo !== "social") {
+      const r = await buscarFonte(c.env, textQuery);
+      candidatos = r.candidatos;
+    }
+    if (escopo === "social" || escopo === "ambos") {
+      const social = await buscarSocial(c.env, termo, cidade, mr, uf);
+      candidatos = candidatos.concat(social);
+    }
   } catch (ex: any) {
     return c.json({ erro: ex?.message || "Falha ao consultar a fonte de busca." }, 502);
   }
@@ -1077,8 +1275,12 @@ app.post("/api/prospeccao/salvar", async (c) => {
 // por isso cada execucao processa um LOTE de cidades e avanca um cursor salvo
 // na tabela meta. Em alguns dias cobre toda a regiao e recomeca.
 // --------------------------------------------------------------------------
-const CRON_BATCH = 10;                                  // cidades por execucao (econômico p/ cota grátis Serper; ~300/mês)
+const CRON_BATCH = 10;                                  // cidades por execucao (Google Maps) — ~300 créditos Serper/mês
 const CRON_TERMOS = ["Starlink internet via satélite"]; // termos por cidade (1 = mais barato)
+// Varredura em redes sociais (Instagram/Facebook) na mesma execucao diaria.
+// Cursor proprio e lote menor para controlar custo: CRON_SOCIAL_BATCH cidades/dia
+// = +CRON_SOCIAL_BATCH créditos Serper/dia. Ponha 0 para desligar a parte social.
+const CRON_SOCIAL_BATCH = 5;
 
 async function metaGet(db: D1Database, chave: string): Promise<string | null> {
   const r = await db.prepare("SELECT valor FROM meta WHERE chave=?").bind(chave).first<Row>();
@@ -1122,12 +1324,31 @@ function chavePendente(nome: string, cidade: string, telefone: string): string {
   return "nc:" + L.norm(nome) + "|" + L.norm(cidade);
 }
 
+// Insere um candidato na fila de pendentes (dedup por chave, INSERT OR IGNORE).
+// Retorna true se foi realmente inserido (candidato novo).
+async function inserePendente(db: D1Database, cand: Row): Promise<boolean> {
+  const chave = chavePendente(cand.nome, cand.cidade, cand.telefone || "");
+  const res = await db.prepare(
+    `INSERT OR IGNORE INTO varredura_pendentes
+       (nome,tipo,endereco,cidade,uf,telefone,whatsapp,site,fonte,lat,lng,place_id,chave,encontrado_em)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    cand.nome, cand.tipo || "", cand.endereco || "", cand.cidade || "", (cand.uf || "").toUpperCase(),
+    cand.telefone || "", cand.whatsapp || "", cand.site || "", cand.fonte || "",
+    cand.lat ?? null, cand.lng ?? null, cand.place_id || "", chave, agora()
+  ).run();
+  return !!res.meta.changes;
+}
+
 // Reconstrui o objeto candidato a partir de uma linha da tabela de pendentes.
 function pendenteParaCandidato(row: Row): Row {
+  const tipo = String(row.tipo || "");
+  const rede = (tipo === "Instagram" || tipo === "Facebook") ? tipo : "";
   return {
     nome: row.nome, tipo: row.tipo, endereco: row.endereco, cidade: row.cidade, uf: row.uf,
     telefone: row.telefone, whatsapp: row.whatsapp, site: row.site, fonte: row.fonte,
     lat: row.lat, lng: row.lng, place_id: row.place_id,
+    rede, handle: rede ? handleSocial(String(row.fonte || row.site || "")) : "",
     auto: true, encontrado_em: row.encontrado_em,
   };
 }
@@ -1170,25 +1391,40 @@ async function runCron(env: Env): Promise<Row> {
         if (!cand.uf) cand.uf = alvo.uf;
         // Ja esta na base? nao vira pendente.
         if (achaDup(idx, cand.nome, cand.cidade, cand.telefone || "") !== null) { jaNaBase += 1; continue; }
-        // Insere como pendente; dedup por chave (INSERT OR IGNORE).
-        const chave = chavePendente(cand.nome, cand.cidade, cand.telefone || "");
-        const res = await db.prepare(
-          `INSERT OR IGNORE INTO varredura_pendentes
-             (nome,tipo,endereco,cidade,uf,telefone,whatsapp,site,fonte,lat,lng,place_id,chave,encontrado_em)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-        ).bind(
-          cand.nome, cand.tipo || "", cand.endereco || "", cand.cidade || "", (cand.uf || "").toUpperCase(),
-          cand.telefone || "", cand.whatsapp || "", cand.site || "", cand.fonte || "",
-          cand.lat ?? null, cand.lng ?? null, cand.place_id || "", chave, agora()
-        ).run();
-        if (res.meta.changes) pendentes += 1; else jaPendentes += 1;
+        if (await inserePendente(db, cand)) pendentes += 1; else jaPendentes += 1;
       }
     }
   }
 
+  // Varredura em redes sociais (Instagram/Facebook) — cursor proprio, lote menor.
+  let pendentesSocial = 0;
+  if (CRON_SOCIAL_BATCH > 0 && env.SERPER_API_KEY) {
+    const cursorS = parseInt((await metaGet(db, "cron_cursor_social")) || "0", 10) || 0;
+    const loteS: { municipio: string; uf: string }[] = [];
+    for (let i = 0; i < CRON_SOCIAL_BATCH && i < cidades.length; i++) {
+      loteS.push(cidades[(cursorS + i) % cidades.length]);
+    }
+    for (const alvo of loteS) {
+      buscas += 1;
+      let social: Row[];
+      try { social = await buscarSocial(env, "", alvo.municipio, "", alvo.uf); }
+      catch { erros += 1; continue; }
+      for (const cand of social) {
+        if (!cand.nome) continue;
+        if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
+        if (!cand.cidade) cand.cidade = alvo.municipio;
+        if (!cand.uf) cand.uf = alvo.uf;
+        if (achaDup(idx, cand.nome, cand.cidade, cand.telefone || "") !== null) { jaNaBase += 1; continue; }
+        if (await inserePendente(db, cand)) { pendentes += 1; pendentesSocial += 1; } else jaPendentes += 1;
+      }
+    }
+    await metaSet(db, "cron_cursor_social", String((cursorS + CRON_SOCIAL_BATCH) % cidades.length));
+  }
+
   const novoCursor = (cursor + CRON_BATCH) % cidades.length;
   const stats: Row = {
-    ok: true, data: agora(), buscas, pendentes, ja_na_base: jaNaBase, ja_pendentes: jaPendentes, excluidos, erros,
+    ok: true, data: agora(), buscas, pendentes, pendentes_social: pendentesSocial,
+    ja_na_base: jaNaBase, ja_pendentes: jaPendentes, excluidos, erros,
     cidades: lote.map((a) => `${a.municipio}/${a.uf}`),
     cursor_de: cursor, cursor_ate: novoCursor, total_cidades: cidades.length,
   };

@@ -106,6 +106,8 @@ const App = (() => {
     await carregarMunicipios();
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
+    // Badge de pendências de follow-up (vencidas + hoje) na aba, sem abrir a aba.
+    fetch("/api/follow-up").then(r => r.json()).then(atualizarBadgeFollowUp).catch(() => {});
   }
 
   // Carrega os municípios das UFs de atuação (p/ reconhecer a 1ª cidade em campos
@@ -638,11 +640,74 @@ const App = (() => {
   }
 
   function view(v) {
-    const views = { mapa: "view-mapa", painel: "view-painel", prospec: "view-prospec" };
+    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec" };
     Object.entries(views).forEach(([k, id]) => $(id).classList.toggle("hidden", k !== v));
-    ["mapa", "painel", "prospec"].forEach(k => $("tab-" + k).classList.toggle("on", k === v));
+    ["mapa", "painel", "followup", "prospec"].forEach(k => $("tab-" + k).classList.toggle("on", k === v));
     if (v === "painel") renderPainel();
+    if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
+  }
+
+  // ==================== FOLLOW-UP / MONITORAR ====================
+  async function carregarFollowUp() {
+    const box = $("fu-body");
+    box.innerHTML = `<div class="empty">Carregando follow-up…</div>`;
+    let d;
+    try { d = await (await fetch("/api/follow-up")).json(); }
+    catch (e) { box.innerHTML = `<div class="empty">Não foi possível carregar o follow-up.</div>`; return; }
+    atualizarBadgeFollowUp(d);
+    if (!d.total) {
+      box.innerHTML = `<div class="empty">Tudo em dia 🎉 — nenhuma ação vencida ou pendente. Marque a "próxima ação" dos prospects na ficha para acompanhá-los aqui.</div>`;
+      return;
+    }
+    const grupos = [
+      { k: "vencidas", tit: "⚠️ Vencidas", cls: "fu-venc", desc: "ação com data no passado" },
+      { k: "hoje_list", tit: "📅 Para hoje", cls: "fu-hoje", desc: "ação marcada para hoje" },
+      { k: "proximas", tit: "⏭️ Próximos 7 dias", cls: "fu-prox", desc: "ação agendada em breve" },
+      { k: "parados", tit: "❄️ Parados (sem contato há 14+ dias)", cls: "fu-parado", desc: "sem próxima ação marcada" },
+    ];
+    box.innerHTML = grupos.map(g => {
+      const lista = d[g.k] || [];
+      if (!lista.length) return "";
+      return `
+        <div class="fu-grupo ${g.cls}">
+          <div class="fu-grupo-hd"><h3>${g.tit}</h3><span class="fu-count">${lista.length}</span><span class="hint">${g.desc}</span></div>
+          <div class="fu-rows">${lista.map(fuRow).join("")}</div>
+        </div>`;
+    }).join("") || `<div class="empty">Tudo em dia 🎉</div>`;
+  }
+
+  function atualizarBadgeFollowUp(d) {
+    const el = $("tab-followup-badge");
+    if (!el) return;
+    const urgentes = (d.contagem && (d.contagem.vencidas + d.contagem.hoje)) || 0;
+    if (urgentes > 0) { el.textContent = urgentes; el.hidden = false; }
+    else { el.hidden = true; }
+  }
+
+  function fuRow(x) {
+    const loc = [cidadeCurta(x.cidade), x.uf].filter(Boolean).join(" · ");
+    const tel = x.whatsapp || x.telefone || "";
+    const bits = [];
+    if (x.dias_atraso != null) bits.push(`<span class="fu-tag atraso">${x.dias_atraso}d em atraso</span>`);
+    else if (x.dias_para != null) bits.push(`<span class="fu-tag">em ${x.dias_para}d</span>`);
+    else if (x.dias_sem_contato != null) bits.push(`<span class="fu-tag frio">${x.dias_sem_contato}d sem contato</span>`);
+    else if (x.dias_sem_contato === null) bits.push(`<span class="fu-tag frio">nunca contatado</span>`);
+    if (x.prioridade) bits.push(`<span class="fu-tag pri-${esc((x.prioridade||'').toLowerCase())}">${esc(x.prioridade)}</span>`);
+    if (x.faixa_potencial) bits.push(`<span class="fu-tag">${esc(x.faixa_potencial)}</span>`);
+    const acao = x.proxima_acao ? `<div class="fu-acao">▸ ${esc(x.proxima_acao)}</div>` : "";
+    return `
+      <div class="fu-row" onclick="App.abrirFicha(${x.id})">
+        <div class="fu-main">
+          <b>${esc(x.nome)}</b>
+          <span class="fu-meta">${esc(loc)}${x.status ? " · " + esc(x.status) : ""}${x.responsavel ? " · " + esc(x.responsavel) : ""}</span>
+          ${acao}
+        </div>
+        <div class="fu-side">
+          ${bits.join("")}
+          ${tel ? `<span class="fu-tel">${esc(tel)}</span>` : ""}
+        </div>
+      </div>`;
   }
 
   // ==================== PROSPECÇÃO (busca Google Places) ====================
@@ -715,22 +780,26 @@ const App = (() => {
       mrs.map(o => `<option value="${esc(o.microrregiao)}">${esc(o.microrregiao)}</option>`).join("");
   }
 
-  function sugProspec(t) { $("p-termo").value = t; buscarProspec(); }
+  function sugProspec(t) { $("p-termo").value = t; if ($("p-escopo")) $("p-escopo").value = "maps"; buscarProspec(); }
+  function sugProspecSocial(t) { $("p-termo").value = t; if ($("p-escopo")) $("p-escopo").value = "social"; buscarProspec(); }
 
   async function buscarProspec() {
     const termo = $("p-termo").value.trim();
     const uf = $("p-uf").value, cidade = $("p-cidade").value.trim(), mr = $("p-mr").value;
+    const escopo = $("p-escopo") ? $("p-escopo").value : "maps";
     if (!termo && !uf && !cidade) { toast("Informe um termo, cidade ou estado para buscar."); return; }
     const btn = $("p-buscar"); btn.disabled = true; btn.textContent = "Buscando…";
     $("p-saveall").style.display = "none";
     $("p-info").textContent = "";
-    $("p-lista").innerHTML = `<div class="empty">Buscando empresas na web…</div>`;
+    const ondeMsg = escopo === "social" ? "em redes sociais" : (escopo === "ambos" ? "no Google Maps e redes sociais" : "na web");
+    $("p-lista").innerHTML = `<div class="empty">Buscando empresas ${ondeMsg}…</div>`;
     try {
       const p = new URLSearchParams();
       if (termo) p.set("termo", termo);
       if (uf) p.set("uf", uf);
       if (cidade) p.set("cidade", cidade);
       if (mr) p.set("microrregiao", mr);
+      if (escopo) p.set("escopo", escopo);
       const r = await fetch("/api/busca-places?" + p.toString());
       const js = await r.json();
       if (!r.ok) {
@@ -766,23 +835,32 @@ const App = (() => {
   function cardProspec(x, i) {
     const loc = [x.cidade, x.uf].filter(Boolean).join(" · ");
     const tel = x.telefone || "";
+    const rede = x.rede || "";
     const linhas = [];
     if (tel) linhas.push(`<div class="pl"><span>${x.whatsapp ? "WhatsApp" : "Telefone"}</span><b>${esc(tel)}</b></div>`);
+    if (rede && x.handle) linhas.push(`<div class="pl"><span>Perfil</span><b>${esc(x.handle)}</b></div>`);
     linhas.push(`<div class="pl"><span>CNPJ</span><b class="hint">a completar</b></div>`);
     if (x.endereco) linhas.push(`<div class="pl"><span>Endereço</span><b>${esc(x.endereco)}</b></div>`);
     if (loc) linhas.push(`<div class="pl"><span>Cidade/UF</span><b>${esc(loc)}</b></div>`);
     const links = [];
-    if (x.site) links.push(`<a href="${esc(x.site)}" target="_blank" rel="noopener">Site</a>`);
-    if (x.fonte) links.push(`<a href="${esc(x.fonte)}" target="_blank" rel="noopener">Ver no Google Maps</a>`);
+    if (rede) {
+      links.push(`<a href="${esc(x.fonte || x.site)}" target="_blank" rel="noopener">Ver no ${esc(rede)}</a>`);
+    } else {
+      if (x.site) links.push(`<a href="${esc(x.site)}" target="_blank" rel="noopener">Site</a>`);
+      if (x.fonte) links.push(`<a href="${esc(x.fonte)}" target="_blank" rel="noopener">Ver no Google Maps</a>`);
+    }
     const acao = x.ja_salvo
       ? `<button class="btn" disabled style="background:var(--soft);color:var(--muted)">✓ Já está na base</button>`
       : `<button class="btn primary" id="psave-${i}" onclick="App.salvarProspec(${i})">+ Salvar na base</button>`;
+    const tipoBadge = rede
+      ? `<span class="ptipo" style="background:#f3e8ff;color:#7c3aed">${esc(rede)}</span>`
+      : (x.tipo ? `<span class="ptipo">${esc(x.tipo)}</span>` : "");
     return `
       <div class="pcard${x.ja_salvo ? " saved" : ""}" id="pcard-${i}">
         <div class="ph">
           <div class="pt">
             <b>${esc(x.nome)}</b>
-            ${x.tipo ? `<span class="ptipo">${esc(x.tipo)}</span>` : ""}
+            ${tipoBadge}
           </div>
           ${x.ja_salvo ? `<span class="badge-saved">na base</span>` : ""}
         </div>
@@ -852,9 +930,14 @@ const App = (() => {
     const rows = PEND.map(p => {
       const local = [cidadeCurta(p.cidade), p.uf].filter(Boolean).join(" · ") || "—";
       const tel = p.whatsapp || p.telefone || "";
+      const ehSocial = p.tipo === "Instagram" || p.tipo === "Facebook";
       const links = [];
-      if (p.site) links.push(`<a href="${esc(p.site)}" target="_blank" rel="noopener">Site</a>`);
-      if (p.fonte) links.push(`<a href="${esc(p.fonte)}" target="_blank" rel="noopener">Maps</a>`);
+      if (ehSocial) {
+        links.push(`<a href="${esc(p.fonte || p.site)}" target="_blank" rel="noopener">${esc(p.tipo)}</a>`);
+      } else {
+        if (p.site) links.push(`<a href="${esc(p.site)}" target="_blank" rel="noopener">Site</a>`);
+        if (p.fonte) links.push(`<a href="${esc(p.fonte)}" target="_blank" rel="noopener">Maps</a>`);
+      }
       return `
       <tr>
         <td class="c-nome">${esc(p.nome)}${p.tipo ? `<br><span class="hint">${esc(p.tipo)}</span>` : ""}</td>
@@ -1089,6 +1172,38 @@ const App = (() => {
     return `<span class="pill-faixa" style="--pc:${hex}"><span class="d" style="background:${hex}"></span>${esc(txt)}</span>`;
   }
 
+  // Sugestao automatica de faixa de potencial (vem do backend em e.faixa_sugerida).
+  // So aparece se houver sugestao e ela for diferente da faixa ja definida.
+  function faixaSugeridaHTML(e) {
+    const s = e && e.faixa_sugerida;
+    if (!s || !s.faixa) return "";
+    if (e.faixa_potencial === s.faixa) return ""; // ja esta classificado igual
+    const motivos = (s.motivos || []).join(" · ");
+    const jaTem = !!e.faixa_potencial;
+    return `
+      <div class="faixa-sug">
+        <span class="fs-ico">💡</span>
+        <div class="fs-txt">
+          <b>Sugestão: ${esc(s.faixa)}</b>
+          ${motivos ? `<span class="fs-mot">${esc(motivos)}</span>` : ""}
+        </div>
+        <button class="btn sm primary" onclick="App.aplicarFaixaSugerida()">${jaTem ? "Trocar" : "Usar"}</button>
+      </div>`;
+  }
+
+  async function aplicarFaixaSugerida() {
+    const s = cur && cur.faixa_sugerida;
+    if (!cur || !cur.id || !s || !s.faixa) return;
+    const r = await fetch("/api/empresas/" + cur.id + "/faixa", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ faixa_potencial: s.faixa }),
+    });
+    if (!r.ok) { toast("Não foi possível aplicar a sugestão."); return; }
+    toast("Potencial classificado: " + s.faixa);
+    await recarregar();
+    await abrirFicha(cur.id);
+  }
+
   function viewHTML(e) {
     const chips = [];
     if (e.trabalha_telecom) chips.push("Telecom/tecnologia");
@@ -1112,6 +1227,7 @@ const App = (() => {
         ${faixaPill(e.faixa_potencial)}
         <span class="pill-venda ${e.ja_vendeu ? "sim" : "nao"}">${e.ja_vendeu ? "✓ Já fez venda" : "Ainda não vendeu"}</span>
       </div>
+      ${faixaSugeridaHTML(e)}
 
       <div class="sec" style="margin-top:16px"><h4>Contato</h4>
         <dl class="kv">
@@ -1303,10 +1419,10 @@ const App = (() => {
 
   return {
     init, view, ufMudou, limparFiltros, buscaDebounced, tema,
-    abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus,
+    abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus, aplicarFaixaSugerida,
     addContato, delContato, addFilial, delFilial, excluir, realce,
     exportar, modelo, abrirImport, fazerImport,
-    pUfMudou, sugProspec, buscarProspec, salvarProspec, salvarTodosProspec,
+    pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
     varreduraAgora,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,

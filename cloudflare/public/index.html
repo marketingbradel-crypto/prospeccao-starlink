@@ -21,6 +21,7 @@
   <nav class="viewtabs" role="tablist" aria-label="Visão">
     <button id="tab-mapa" class="on" onclick="App.view('mapa')">Mapa</button>
     <button id="tab-painel" onclick="App.view('painel')">Dashboard</button>
+    <button id="tab-followup" onclick="App.view('followup')">Follow-up <span id="tab-followup-badge" class="tab-badge" hidden></span></button>
     <button id="tab-prospec" onclick="App.view('prospec')">Prospecção Starlink</button>
   </nav>
 
@@ -101,6 +102,19 @@
   <!-- ===================== VISÃO DASHBOARD ===================== -->
   <div class="view-painel hidden" id="view-painel"></div>
 
+  <!-- ===================== VISÃO FOLLOW-UP ===================== -->
+  <div class="view-followup hidden" id="view-followup">
+    <section class="card">
+      <div class="hd">
+        <h2>Follow-up — o que fazer hoje</h2>
+        <span class="map-ctx">Prospects ativos organizados pela próxima ação. Clique em qualquer um para abrir a ficha e registrar o contato.</span>
+      </div>
+      <div class="bd" id="fu-body">
+        <div class="empty">Carregando follow-up…</div>
+      </div>
+    </section>
+  </div>
+
   <!-- ===================== VISÃO PROSPECÇÃO ===================== -->
   <div class="view-prospec hidden" id="view-prospec">
     <section class="card prospec-search">
@@ -119,6 +133,13 @@
             <datalist id="p-cidades"></datalist>
           </label>
           <label class="fld"><span>Microrregião</span><select id="p-mr"><option value="">Todas</option></select></label>
+          <label class="fld"><span>Onde buscar</span>
+            <select id="p-escopo">
+              <option value="maps">Google Maps</option>
+              <option value="social">Redes sociais (Instagram/Facebook)</option>
+              <option value="ambos">Google Maps + Redes sociais</option>
+            </select>
+          </label>
           <button class="btn primary" id="p-buscar" onclick="App.buscarProspec()">Buscar</button>
         </div>
         <div class="prospec-sugs">
@@ -127,6 +148,8 @@
           <button class="chip-btn" onclick="App.sugProspec('revenda de antena Starlink')">revenda de antena Starlink</button>
           <button class="chip-btn" onclick="App.sugProspec('loja de internet via satélite')">internet via satélite</button>
           <button class="chip-btn" onclick="App.sugProspec('instalação de Starlink')">instalação de Starlink</button>
+          <button class="chip-btn" onclick="App.sugProspecSocial('loja de informática')">📱 loja no Instagram</button>
+          <button class="chip-btn" onclick="App.sugProspecSocial('provedor de internet')">📱 provedor no Instagram</button>
         </div>
         <div class="prospec-auto" id="p-auto">
           <span class="pa-ico">🔄</span>
