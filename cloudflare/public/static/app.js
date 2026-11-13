@@ -55,6 +55,8 @@ const App = (() => {
       { k: "origem_contato", l: "Origem do contato", type: "select", opts: "origens" },
     ]},
     { t: "Classificação e gestão", f: [
+      { k: "faixa_potencial", l: "Potencial (vendas/mês)", type: "select", opts: "faixas_potencial" },
+      { k: "ja_vendeu", l: "Já fez venda?", type: "bool" },
       { k: "status", l: "Status comercial", type: "select", opts: "status" },
       { k: "status_vivensis", l: "Status Vivensis", type: "select", opts: "status_vivensis" },
       { k: "canal", l: "Canal", type: "select", opts: "canais" },
@@ -89,10 +91,11 @@ const App = (() => {
     $("f-mr").innerHTML = `<option value="">Todas</option>`;
     $("f-seg").innerHTML = selOpts(B.segmentos, "Todos");
     $("f-status").innerHTML = selOpts(B.status, "Todos");
+    $("f-faixa").innerHTML = selOpts(B.faixas_potencial, "Todos");
     $("f-resp").innerHTML = selOpts(B.responsaveis, "Todos");
     $("f-canal").innerHTML = selOpts(B.canais, "Todos");
     // f-uf usa onchange=App.ufMudou() no HTML; os demais recarregam direto
-    ["f-mr", "f-seg", "f-status", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
+    ["f-mr", "f-seg", "f-status", "f-faixa", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
     ["f-cred", "f-pot", "f-tel"].forEach(id => $(id).addEventListener("change", recarregar));
     $("legend").innerHTML = ["verde", "azul", "amarelo", "laranja", "vermelho"]
       .map(c => `<span><i style="background:${hexCor(c)}"></i>${esc(B.cor_label[c])}</span>`).join("");
@@ -110,7 +113,8 @@ const App = (() => {
     const p = new URLSearchParams();
     const add = (id, key) => { const v = $(id).value; if (v) p.set(key, v); };
     add("f-uf", "uf"); add("f-mr", "microrregiao"); add("f-seg", "segmento");
-    add("f-status", "status"); add("f-resp", "responsavel"); add("f-canal", "canal");
+    add("f-status", "status"); add("f-faixa", "faixa"); add("f-vendeu", "vendeu");
+    add("f-resp", "responsavel"); add("f-canal", "canal");
     if ($("f-cred").checked) p.set("credenciado", "1");
     if ($("f-pot").checked) p.set("potencial", "1");
     if ($("f-tel").checked) p.set("telecom", "1");
@@ -465,12 +469,19 @@ const App = (() => {
   function renderLista() {
     $("list-title").textContent = `Empresas (${EMPRESAS.length})`;
     if (!EMPRESAS.length) { $("lista").innerHTML = `<div class="empty">Nenhuma empresa para os filtros atuais.</div>`; return; }
-    const rows = EMPRESAS.map(e => `
+    const rows = EMPRESAS.map(e => {
+      const fx = e.faixa_potencial || "";
+      const fxHex = (B && B.faixa_hex && B.faixa_hex[fx]) || "#9aa0ac";
+      const fxCurta = fx ? fx.replace(" vendas/mês", "") : "—";
+      const venda = e.ja_vendeu ? `<span class="tag-venda" title="Já fez venda">✓</span>` : "";
+      return `
       <tr onclick="App.abrirFicha(${e.id})" onmouseenter="App.realce(${e.id},1)" onmouseleave="App.realce(${e.id},0)">
-        <td>${esc(e.nome_fantasia || e.razao_social)}<br><span class="hint">${esc(e.cidade || "")}${e.uf ? " · " + e.uf : ""}</span></td>
+        <td>${esc(e.nome_fantasia || e.razao_social)} ${venda}<br><span class="hint">${esc(e.cidade || "")}${e.uf ? " · " + e.uf : ""}</span></td>
+        <td><span class="pill-faixa sm" style="--pc:${fxHex}"><span class="d" style="background:${fxHex}"></span>${esc(fxCurta)}</span></td>
         <td><span class="badge"><span class="d" style="background:${e.cor_hex}"></span>${esc(e.status || "")}</span></td>
-      </tr>`).join("");
-    $("lista").innerHTML = `<table><thead><tr><th>Empresa</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+      </tr>`;
+    }).join("");
+    $("lista").innerHTML = `<table><thead><tr><th>Empresa</th><th>Potencial</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function realce(id, on) {
@@ -501,28 +512,76 @@ const App = (() => {
         <span class="val">${v}</span></div>`).join("") + `</div>`;
   }
 
+  // Rotulo curto do mes "YYYY-MM" -> "abr/26".
+  const MESES_ABREV = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+  function rotuloMes(ym) {
+    const [y, m] = String(ym).split("-");
+    return `${MESES_ABREV[(Number(m) || 1) - 1]}/${String(y).slice(2)}`;
+  }
+
+  // Gráfico de colunas verticais com duas séries (leads x credenciamentos) por mês.
+  function chartMensal(serie) {
+    if (!serie || !serie.length) return '<div class="empty">Sem datas suficientes para a evolução mensal.</div>';
+    const max = Math.max(1, ...serie.map(s => Math.max(s.leads, s.creds)));
+    const cols = serie.map(s => {
+      const hl = Math.round(s.leads / max * 100), hc = Math.round(s.creds / max * 100);
+      return `<div class="vcol">
+        <div class="vbars">
+          <span class="vbar lead" style="height:${hl}%" title="${s.leads} lead(s) em ${rotuloMes(s.mes)}"><em>${s.leads || ""}</em></span>
+          <span class="vbar cred" style="height:${hc}%" title="${s.creds} credenciamento(s) em ${rotuloMes(s.mes)}"><em>${s.creds || ""}</em></span>
+        </div>
+        <div class="vlbl">${rotuloMes(s.mes)}</div>
+      </div>`;
+    }).join("");
+    return `<div class="vchart">${cols}</div>
+      <div class="vleg">
+        <span><i style="background:${hexCor("azul")}"></i>Leads (novas empresas)</span>
+        <span><i style="background:${hexCor("verde")}"></i>Credenciamentos</span>
+      </div>`;
+  }
+
+  // Cartão de tempo médio de uma etapa do funil.
+  function tempoStat(label, t) {
+    const v = (t && t.dias != null) ? `${t.dias}<small> dias</small>` : "—";
+    const n = (t && t.n) ? `${t.n} empresa${t.n === 1 ? "" : "s"}` : "sem dados";
+    return `<div class="stat"><div class="v">${v}</div><div class="l">${esc(label)}</div><div class="l" style="opacity:.7">${n}</div></div>`;
+  }
+
   function renderPainel() {
     const d = DASH;
     const stats = [
       ["Total mapeadas", d.total], ["Potenciais", d.potenciais], ["Em negociação", d.em_negociacao],
       ["Aguardando doc.", d.aguardando], ["Credenciados", d.credenciados], ["Perdidos/sem retorno", d.perdidos],
       ["Municípios", d.municipios], ["Microrregiões", d.microrregioes],
+      ["Já venderam", d.ja_venderam || 0],
     ];
     const statusData = B.status.map(s => [s, d.por_status[s] || 0]).filter(x => x[1] > 0);
     const ufData = B.ufs.map(u => [u, d.por_uf[u] || 0]);
     const segData = Object.entries(d.por_segmento);
+    const faixaData = (B.faixas_potencial || []).map(f => [f, (d.por_faixa && d.por_faixa[f]) || 0]);
+    if (d.sem_faixa) faixaData.push(["Sem classificação", d.sem_faixa]);
+    const tf = d.tempos_funil || {};
     $("view-painel").innerHTML = `
       <div class="card wide"><div class="hd"><h2>Resumo geral</h2></div><div class="bd">
         <div class="statgrid">${stats.map(s => `<div class="stat"><div class="v">${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")}</div>
       </div></div>
       <div class="card"><div class="hd"><h2>Por status comercial</h2></div><div class="bd">${statusData.length ? chart(statusData, l => hexCor(corStatus(l))) : '<div class="empty">Sem dados.</div>'}</div></div>
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
+      <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Funil de conversão</h2></div><div class="bd">
         <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">
           <div class="stat"><div class="v">${d.total}</div><div class="l">Prospectados (base)</div></div>
           <div class="stat"><div class="v" style="color:${hexCor("amarelo")}">${d.em_negociacao + d.aguardando}</div><div class="l">Em andamento</div></div>
           <div class="stat"><div class="v" style="color:${hexCor("verde")}">${d.credenciados}</div><div class="l">Credenciados (${d.taxa_conversao}%)</div></div>
+        </div>
+      </div></div>
+      <div class="card wide"><div class="hd"><h2>Evolução mensal</h2></div><div class="bd">${chartMensal(d.serie_mensal)}</div></div>
+      <div class="card wide"><div class="hd"><h2>Tempo médio no funil</h2></div><div class="bd">
+        <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">
+          ${tempoStat("Lead → 1º contato", tf.lead_contato)}
+          ${tempoStat("Lead → credenciamento", tf.lead_cred)}
+          ${tempoStat("Credenciado → 1ª venda", tf.cred_venda)}
         </div>
       </div></div>`;
   }
@@ -885,6 +944,13 @@ const App = (() => {
 
   function kv(label, val) { return val ? `<dt>${esc(label)}</dt><dd>${esc(val)}</dd>` : ""; }
 
+  // Pílula colorida da faixa de potencial (cor por faixa; cinza quando sem classificação).
+  function faixaPill(faixa) {
+    const hex = (B && B.faixa_hex && B.faixa_hex[faixa]) || "#9aa0ac";
+    const txt = faixa || "Potencial não classificado";
+    return `<span class="pill-faixa" style="--pc:${hex}"><span class="d" style="background:${hex}"></span>${esc(txt)}</span>`;
+  }
+
   function viewHTML(e) {
     const chips = [];
     if (e.trabalha_telecom) chips.push("Telecom/tecnologia");
@@ -904,6 +970,11 @@ const App = (() => {
       <div class="statuspick" id="statuspick">${B.status.map(s =>
         `<button class="${s === e.status ? "on" : ""}" style="${s === e.status ? "color:" + hexCor(corStatus(s)) : ""}" onclick="App.setStatus('${esc(s)}')"><span class="d" style="background:${hexCor(corStatus(s))}"></span>${esc(s)}</button>`).join("")}</div>
 
+      <div class="classbar">
+        ${faixaPill(e.faixa_potencial)}
+        <span class="pill-venda ${e.ja_vendeu ? "sim" : "nao"}">${e.ja_vendeu ? "✓ Já fez venda" : "Ainda não vendeu"}</span>
+      </div>
+
       <div class="sec" style="margin-top:16px"><h4>Contato</h4>
         <dl class="kv">
           ${kv("CNPJ", e.cnpj)}${kv("Telefone", e.telefone_comercial)}${kv("WhatsApp", e.whatsapp)}
@@ -919,6 +990,7 @@ const App = (() => {
         ${chips.length ? `<div class="chips">${chips.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}
         <dl class="kv" style="margin-top:8px">
           ${kv("Segmento", e.segmento)}${kv("Produtos", e.produtos)}${kv("Interesse", e.interesse_parceiro)}
+          ${kv("Potencial", e.faixa_potencial)}${kv("Já fez venda?", e.ja_vendeu ? "Sim" : "Não")}
           ${kv("Capacidade/mês", e.capacidade_vendas_mes)}${kv("Filiais", e.qtd_filiais)}${kv("Origem", e.origem_contato)}
           ${kv("Canal", e.canal)}${kv("Responsável interno", e.responsavel)}${kv("Prioridade", e.prioridade)}
           ${kv("Status Vivensis", e.status_vivensis)}
@@ -1072,7 +1144,7 @@ const App = (() => {
 
   // ==================== util ====================
   function limparFiltros() {
-    ["f-uf", "f-mr", "f-seg", "f-status", "f-resp", "f-canal"].forEach(id => $(id).value = "");
+    ["f-uf", "f-mr", "f-seg", "f-status", "f-faixa", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).value = "");
     ["f-cred", "f-pot", "f-tel"].forEach(id => $(id).checked = false);
     $("busca").value = ""; sel = null;
     $("map-ctx").textContent = "Concentração de empresas por microrregião · marcadores = empresas por status";

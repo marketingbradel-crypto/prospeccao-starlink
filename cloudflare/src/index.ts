@@ -24,6 +24,7 @@ const EMPRESA_CAMPOS = [
   "resp_nome", "resp_cargo", "resp_telefone", "resp_whatsapp", "resp_email",
   "segmento", "produtos", "trabalha_telecom", "ja_starlink", "exp_antenas",
   "equipe_tecnica", "loja_fisica", "qtd_filiais", "capacidade_vendas_mes",
+  "faixa_potencial", "ja_vendeu",
   "interesse_parceiro", "origem_contato",
   "canal", "responsavel", "prioridade", "status", "status_vivensis", "etapa",
   "motivo_perda", "observacoes",
@@ -38,12 +39,12 @@ const CAMPOS_TEXTO = new Set([
   "telefone_comercial", "whatsapp", "email_comercial", "site_instagram",
   "endereco", "cep", "cidade", "uf", "microrregiao",
   "resp_nome", "resp_cargo", "resp_telefone", "resp_whatsapp", "resp_email",
-  "segmento", "produtos", "capacidade_vendas_mes", "interesse_parceiro",
+  "segmento", "produtos", "capacidade_vendas_mes", "faixa_potencial", "interesse_parceiro",
   "origem_contato", "canal", "responsavel", "prioridade", "status",
   "status_vivensis", "motivo_perda", "observacoes",
   "proxima_acao", "proxima_acao_data", "data_ultimo_contato",
 ]);
-const CAMPOS_BOOL = new Set(["trabalha_telecom", "ja_starlink", "exp_antenas", "equipe_tecnica", "loja_fisica"]);
+const CAMPOS_BOOL = new Set(["trabalha_telecom", "ja_starlink", "exp_antenas", "equipe_tecnica", "loja_fisica", "ja_vendeu"]);
 const CAMPOS_INT = new Set(["qtd_filiais", "ativacoes_mes", "ativacoes_acum"]);
 const CAMPOS_FLOAT = new Set(["latitude", "longitude"]);
 
@@ -63,6 +64,33 @@ function hoje(): string {
   return new Intl.DateTimeFormat("sv-SE", {
     timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
   }).format(new Date());
+}
+
+// Extrai o mes "YYYY-MM" de uma data "YYYY-MM-DD..." (ou null se invalida).
+function mesDe(s: any): string | null {
+  const m = /^(\d{4})-(\d{2})/.exec(String(s ?? "").trim());
+  return m ? `${m[1]}-${m[2]}` : null;
+}
+
+// Mes seguinte de um "YYYY-MM" (para preencher a serie mensal sem buracos).
+function proxMes(ym: string): string {
+  let [y, m] = ym.split("-").map(Number);
+  m += 1;
+  if (m > 12) { m = 1; y += 1; }
+  return `${y}-${String(m).padStart(2, "0")}`;
+}
+
+// Dias entre duas datas "YYYY-MM-DD" (b - a). null se alguma for invalida
+// ou se a diferenca for negativa (datas fora de ordem / erro de digitacao).
+function diasEntre(a: any, b: any): number | null {
+  const ra = /^\d{4}-\d{2}-\d{2}/.exec(String(a ?? "").trim());
+  const rb = /^\d{4}-\d{2}-\d{2}/.exec(String(b ?? "").trim());
+  if (!ra || !rb) return null;
+  const ta = Date.parse(ra[0] + "T00:00:00Z");
+  const tb = Date.parse(rb[0] + "T00:00:00Z");
+  if (isNaN(ta) || isNaN(tb)) return null;
+  const d = Math.round((tb - ta) / 86400000);
+  return d >= 0 ? d : null;
 }
 
 function soDigitos(s: any): string {
@@ -198,6 +226,11 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
   if (resp) { where.push("responsavel=?"); params.push(resp); }
   const prio = limpar(q.prioridade);
   if (prio) { where.push("prioridade=?"); params.push(prio); }
+  const faixa = limpar(q.faixa);
+  if (faixa) { where.push("faixa_potencial=?"); params.push(faixa); }
+  const vendeu = String(q.vendeu ?? "").toLowerCase();
+  if (["1", "true", "sim"].includes(vendeu)) where.push("ja_vendeu=1");
+  else if (["0", "nao", "não", "false"].includes(vendeu)) where.push("(ja_vendeu=0 OR ja_vendeu IS NULL)");
   if (["1", "true", "sim"].includes(q.credenciado ?? "")) where.push("status='Credenciado'");
   if (["1", "true", "sim"].includes(q.potencial ?? ""))
     where.push("status IN ('Prospectado','Primeiro contato realizado','Em negociação','Interessado')");
@@ -379,6 +412,8 @@ app.get("/api/bootstrap", (c) => {
     segmentos: L.SEGMENTOS,
     prioridades: L.PRIORIDADES,
     interesse: L.INTERESSE,
+    faixas_potencial: L.FAIXAS_POTENCIAL,
+    faixa_hex: L.FAIXA_HEX,
     status_cor: L.STATUS_COR,
     cor_hex: L.COR_HEX,
     cor_label: L.COR_LABEL,
@@ -583,6 +618,17 @@ app.get("/api/dashboard", async (c) => {
   const municipios = new Set<string>();
   const microrregioes = new Set<string>();
   let credenciados = 0, emNegociacao = 0, aguardando = 0, potenciais = 0, perdidos = 0;
+  // Classificacao comercial: distribuicao por faixa de potencial e quem ja vendeu.
+  const porFaixa: Record<string, number> = {};
+  for (const f of L.FAIXAS_POTENCIAL) porFaixa[f] = 0;
+  let semFaixa = 0, jaVenderam = 0;
+  // Evolucao no tempo: leads e credenciamentos por mes (YYYY-MM).
+  const leadsPorMes: Record<string, number> = {};
+  const credPorMes: Record<string, number> = {};
+  // Tempo medio (dias) em cada etapa do funil — soma e contagem de amostras validas.
+  let sLeadContato = 0, nLeadContato = 0;  // lead -> primeiro contato
+  let sLeadCred = 0, nLeadCred = 0;        // lead -> credenciamento
+  let sCredVenda = 0, nCredVenda = 0;      // credenciamento -> primeira venda
   for (const r of rows) {
     const st = r.status || "";
     porStatus[st] = (porStatus[st] ?? 0) + 1;
@@ -598,13 +644,56 @@ app.get("/api/dashboard", async (c) => {
     else if (cor === "laranja") aguardando += 1;
     else if (cor === "azul") potenciais += 1;
     else if (cor === "vermelho") perdidos += 1;
+
+    const fx = (r.faixa_potencial || "").trim();
+    if (fx && fx in porFaixa) porFaixa[fx] += 1; else semFaixa += 1;
+    if (toBoolInt(r.ja_vendeu)) jaVenderam += 1;
+
+    // Serie mensal: usa data_lead (cai para criado_em se ausente).
+    const mLead = mesDe(r.data_lead) || mesDe(r.criado_em);
+    if (mLead) leadsPorMes[mLead] = (leadsPorMes[mLead] ?? 0) + 1;
+    const mCred = mesDe(r.data_cred);
+    if (mCred) credPorMes[mCred] = (credPorMes[mCred] ?? 0) + 1;
+
+    // Tempos de funil (ignora datas ausentes/invertidas).
+    const d1 = diasEntre(r.data_lead, r.data_primeiro_contato);
+    if (d1 != null) { sLeadContato += d1; nLeadContato += 1; }
+    const d2 = diasEntre(r.data_lead, r.data_cred);
+    if (d2 != null) { sLeadCred += d2; nLeadCred += 1; }
+    const d3 = diasEntre(r.data_cred, r.data_primeira_venda);
+    if (d3 != null) { sCredVenda += d3; nCredVenda += 1; }
   }
   const taxa = total ? Math.round((1000.0 * credenciados) / total) / 10 : 0.0;
   const porSegmentoOrd = Object.fromEntries(Object.entries(porSegmento).sort((a, b) => b[1] - a[1]));
+
+  // Monta a serie mensal contigua (sem buracos) e mantem so os ultimos 12 meses.
+  const mesesSet = new Set<string>([...Object.keys(leadsPorMes), ...Object.keys(credPorMes)]);
+  let serieMensal: { mes: string; leads: number; creds: number }[] = [];
+  if (mesesSet.size) {
+    const ordenados = [...mesesSet].sort();
+    const mesAtual = mesDe(hoje())!;
+    const ultimo = ordenados[ordenados.length - 1];
+    const limite = ultimo > mesAtual ? ultimo : mesAtual;
+    let cur = ordenados[0];
+    while (cur <= limite && serieMensal.length < 240) {
+      serieMensal.push({ mes: cur, leads: leadsPorMes[cur] ?? 0, creds: credPorMes[cur] ?? 0 });
+      cur = proxMes(cur);
+    }
+    serieMensal = serieMensal.slice(-12);
+  }
+  const media = (soma: number, n: number) => (n ? Math.round(soma / n) : null);
+  const temposFunil = {
+    lead_contato: { dias: media(sLeadContato, nLeadContato), n: nLeadContato },
+    lead_cred: { dias: media(sLeadCred, nLeadCred), n: nLeadCred },
+    cred_venda: { dias: media(sCredVenda, nCredVenda), n: nCredVenda },
+  };
+
   return c.json({
     total, potenciais, credenciados, em_negociacao: emNegociacao, aguardando, perdidos,
     municipios: municipios.size, microrregioes: microrregioes.size,
     taxa_conversao: taxa, por_status: porStatus, por_uf: porUf, por_segmento: porSegmentoOrd,
+    serie_mensal: serieMensal, tempos_funil: temposFunil,
+    por_faixa: porFaixa, sem_faixa: semFaixa, ja_venderam: jaVenderam,
   });
 });
 
@@ -1115,6 +1204,8 @@ const MODELO_COLS: [string, string][] = [
   ["Loja física?", "loja_fisica"],
   ["Qtd. filiais", "qtd_filiais"],
   ["Capacidade de vendas/mês", "capacidade_vendas_mes"],
+  ["Faixa de potencial", "faixa_potencial"],
+  ["Já fez venda?", "ja_vendeu"],
   ["Interesse em ser parceiro", "interesse_parceiro"],
   ["Origem do contato", "origem_contato"],
   ["Canal", "canal"],

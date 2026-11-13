@@ -48,6 +48,25 @@ export const SEGMENTOS = [
 // Interesse em se tornar parceiro credenciado
 export const INTERESSE = ["Sim", "Talvez", "A avaliar", "Não"];
 
+// Faixa de potencial — capacidade ESTIMADA de vendas/mes (preenchida no contato).
+// Classifica o tamanho do parceiro/prospect independente de ja ter vendido.
+export const FAIXAS_POTENCIAL = [
+  "10+ vendas/mês",
+  "30+ vendas/mês",
+  "50+ vendas/mês",
+  "80+ vendas/mês",
+  "100+ vendas/mês",
+];
+
+// Cor por faixa (escala quente, do menor para o maior potencial) — usada nos chips e no painel.
+export const FAIXA_HEX: Record<string, string> = {
+  "10+ vendas/mês": "#8fb4e0",
+  "30+ vendas/mês": "#5b8fd0",
+  "50+ vendas/mês": "#e8b800",
+  "80+ vendas/mês": "#e8811f",
+  "100+ vendas/mês": "#cc3a26",
+};
+
 // Motivos de perda
 export const MOTIVOS_PERDA = ["Preço", "Sem interesse", "Concorrência", "Sem perfil", "Não respondeu", "Outro"];
 
