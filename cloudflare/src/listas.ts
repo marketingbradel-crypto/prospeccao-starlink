@@ -36,6 +36,53 @@ export const CANAIS = ["Telecom", "Varejo (mercantil)"];
 // Responsaveis (equipe de prospeccao)
 export const RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita"];
 
+// --------------------------------------------------------------------------
+// Regra geral de atribuicao de responsavel (equipe de prospeccao) por territorio.
+// Base: por UF. Excecoes: certas microrregioes ficam com outro responsavel.
+// Aplicada automaticamente quando a empresa entra/edita SEM responsavel definido
+// (ver montarEmpresa em index.ts) e no backfill da migration 0008_responsaveis.
+// Manter em sincronia com 0008_responsaveis.sql.
+// --------------------------------------------------------------------------
+
+// Padrao por estado
+const RESP_POR_UF: Record<string, string> = {
+  PA: "Luis Carlos",
+  MA: "Ronaldo",
+  TO: "Mateus",
+  GO: "Leandro",
+};
+
+// Excecoes por microrregiao (chave normalizada -> responsavel). Tem prioridade
+// sobre o padrao por UF. As chaves sao o microrregiao sem acento/espaco/pontuacao.
+const RESP_POR_MICRORREGIAO: Record<string, string> = {
+  // Microrregioes do PA que ficam com Leandro
+  tucurui: "Leandro",
+  parauapebas: "Leandro",
+  maraba: "Leandro",
+  paragominas: "Leandro",
+  // Microrregioes do PA que ficam com Mateus
+  redencao: "Mateus",
+  tucumasaofelixdoxingu: "Mateus", // "Tucumã–São Félix do Xingu"
+  xinguara: "Mateus",
+  // Microrregioes do TO que ficam com Ronaldo
+  araguaina: "Ronaldo",
+  araguatins: "Ronaldo",
+  tocantinopolis: "Ronaldo",
+};
+
+// Chave do mapa de excecoes: sem acento, minuscula, so letras/numeros.
+function chaveRegiao(s: string): string {
+  return norm(s || "").replace(/[^a-z0-9]/g, "");
+}
+
+// Responsavel pela regra geral. Retorna "" quando nao ha regra (UF fora de PA/MA/TO/GO).
+export function responsavelPara(uf?: string | null, microrregiao?: string | null): string {
+  const mr = chaveRegiao(microrregiao || "");
+  if (mr && RESP_POR_MICRORREGIAO[mr]) return RESP_POR_MICRORREGIAO[mr];
+  const u = (uf || "").trim().toUpperCase();
+  return RESP_POR_UF[u] || "";
+}
+
 // Origem do lead / contato
 export const ORIGENS = ["Indicação", "Evento", "Inbound (site)", "Prospecção ativa", "Parceiro", "Outro"];
 

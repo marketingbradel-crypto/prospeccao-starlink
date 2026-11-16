@@ -117,14 +117,14 @@ svg.dim path.rg:not(.sel){opacity:.45}
 /* Contorno dos estados PA/MA/TO/GO e rótulos */
 path.state-outline{fill:none;stroke:var(--state-line);stroke-width:3.2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke;pointer-events:none;transition:opacity .12s}
 path.state-outline.off{opacity:.28}
-text.state-lbl{fill:var(--state-lbl);font-family:var(--f);font-weight:800;font-size:calc(23px / var(--z,1));letter-spacing:1px;
+text.state-lbl{fill:var(--state-lbl);font-family:var(--f);font-weight:800;font-size:calc(23px * var(--lblz,1) / var(--z,1));letter-spacing:1px;
   text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:var(--state-halo);stroke-width:4px;stroke-linejoin:round;vector-effect:non-scaling-stroke;
   pointer-events:none;opacity:.92;transition:opacity .12s}
 text.state-lbl.off{opacity:.25}
 /* Detalhe de um estado: linhas de municípios + rótulos de microrregião */
 path.muni{fill:none;stroke:var(--muni-line);stroke-width:.5;vector-effect:non-scaling-stroke;pointer-events:none}
 path.rg.rg-state{stroke:var(--panel);stroke-width:1.2}
-text.rg-lbl{fill:#1b1205;font-family:var(--f);font-weight:700;font-size:calc(12.5px / var(--z,1));text-anchor:middle;
+text.rg-lbl{fill:#1b1205;font-family:var(--f);font-weight:700;font-size:calc(12.5px * var(--lblz,1) / var(--z,1));text-anchor:middle;
   paint-order:stroke;stroke:#fff;stroke-width:2.6px;stroke-linejoin:round;vector-effect:non-scaling-stroke;pointer-events:none}
 text.rg-lbl tspan.v{font-family:var(--fnum);font-weight:800}
 /* Escala do heatmap */

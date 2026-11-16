@@ -442,6 +442,8 @@ const App = (() => {
       if (!this.g) return;
       this.g.setAttribute("transform", `translate(${this.tx.toFixed(2)} ${this.ty.toFixed(2)}) scale(${this.scale})`);
       this.svg.style.setProperty("--z", this.scale);
+      // Rótulos crescem junto com o zoom (raiz da escala: legível sem explodir no zoom máx.)
+      this.svg.style.setProperty("--lblz", Math.sqrt(this.scale));
     },
 
     clamp() {
@@ -934,6 +936,26 @@ const App = (() => {
     }).join("") + `</div>`;
   }
 
+  // Origem formulários: barra por estado com as empresas captadas FORA do VSM
+  // (origem ≠ "VSM Vivensis"), reaproveitando o `outras` de cada UF da cobertura.
+  // Barra = volume relativo ao maior estado; indicadores = contagem | % do total.
+  function chartOrigemForms(cob) {
+    if (!cob || !cob.length) return '<div class="empty">Sem empresas de formulários ainda.</div>';
+    const linhas = cob.map(c => ({ uf: c.uf, n: c.outras || 0 }));
+    const total = linhas.reduce((s, l) => s + l.n, 0);
+    if (!total) return '<div class="empty">Sem empresas de formulários ainda.</div>';
+    const max = Math.max(1, ...linhas.map(l => l.n));
+    const cor = hexCor("azul");
+    const fmtPct = p => String(p).replace(".", ",");
+    return `<div class="chart cobertura">` + linhas.map(l => {
+      const nome = (B.uf_nomes && B.uf_nomes[l.uf]) || l.uf;
+      const share = total ? Math.round((1000.0 * l.n) / total) / 10 : 0;
+      return `<div class="row"><span class="lbl" title="${esc(nome)}">${esc(l.uf)}</span>
+        <span class="track"><span class="fill" style="width:${Math.round(l.n / max * 100)}%;background:${cor}"></span></span>
+        <span class="val" title="${l.n} empresa(s) de formulários em ${esc(nome)} · ${fmtPct(share)}% do total captado por formulário"><span class="num">${l.n} empresa${l.n === 1 ? "" : "s"}</span><span class="sep">|</span><span class="pct" style="color:${cor}">${fmtPct(share)}%</span></span></div>`;
+    }).join("") + `</div>`;
+  }
+
   // Rotulo curto do mes "YYYY-MM" -> "abr/26".
   const MESES_ABREV = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
   function rotuloMes(ym) {
@@ -992,6 +1014,10 @@ const App = (() => {
       <div class="card wide"><div class="hd"><h2>Cobertura VSM por estado${infoIco("Quanto do universo de revendas do portal Vivensis/VSM já está mapeado na base, por estado. Barra = mapeadas ÷ universo conhecido.", "Cobertura VSM")}</h2></div><div class="bd">
         ${chartCobertura(d.cobertura_vsm)}
         <div class="l" style="opacity:.7;margin-top:8px">${d.mapeadas_vsm_total || 0} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas${(d.total - (d.mapeadas_vsm_total || 0)) > 0 ? ` · + ${d.total - (d.mapeadas_vsm_total || 0)} empresas de outras origens (fora do %)` : ""}.</div>
+      </div></div>
+      <div class="card wide"><div class="hd"><h2>Captação por formulário por estado${infoIco("Empresas captadas pela equipe por formulário (origem diferente de VSM), por estado. Barra = volume relativo ao maior estado; % = participação no total captado por formulário.", "Captação por formulário")}</h2></div><div class="bd">
+        ${chartOrigemForms(d.cobertura_vsm)}
+        <div class="l" style="opacity:.7;margin-top:8px">${(d.cobertura_vsm || []).reduce((s, c) => s + (c.outras || 0), 0)} empresas captadas por formulário (origem fora do VSM).</div>
       </div></div>
       <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>

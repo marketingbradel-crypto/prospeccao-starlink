@@ -171,6 +171,8 @@ const App = (() => {
       if (!this.g) return;
       this.g.setAttribute("transform", `translate(${this.tx.toFixed(2)} ${this.ty.toFixed(2)}) scale(${this.scale})`);
       this.svg.style.setProperty("--z", this.scale);
+      // Rótulos crescem junto com o zoom (raiz da escala: legível sem explodir no zoom máx.)
+      this.svg.style.setProperty("--lblz", Math.sqrt(this.scale));
     },
 
     clamp() {

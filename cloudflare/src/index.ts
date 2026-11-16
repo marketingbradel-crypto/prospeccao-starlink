@@ -144,6 +144,13 @@ function montarEmpresa(data: Row, novo = true): Row {
     }
   }
 
+  // Responsavel interno automatico pela regra geral de territorio (UF + excecoes
+  // por microrregiao). So preenche quando vem vazio — nao sobrescreve atribuicao manual.
+  if (!limpar(e.responsavel)) {
+    const r = L.responsavelPara(String(e.uf ?? ""), String(e.microrregiao ?? ""));
+    if (r) e.responsavel = r;
+  }
+
   if ("cnpj" in e) e.cnpj_norm = soDigitos(e.cnpj);
 
   if (novo) {
