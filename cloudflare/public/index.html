@@ -19,18 +19,18 @@
   </div>
 
   <nav class="viewtabs" role="tablist" aria-label="Visão">
-    <button id="tab-mapa" class="on" onclick="App.view('mapa')">Mapa</button>
-    <button id="tab-painel" onclick="App.view('painel')">Dashboard</button>
-    <button id="tab-followup" onclick="App.view('followup')">Follow-up <span id="tab-followup-badge" class="tab-badge" hidden></span></button>
-    <button id="tab-prospec" onclick="App.view('prospec')">Prospecção Starlink</button>
+    <button id="tab-mapa" class="on" onclick="App.view('mapa')" data-tip="Mapa interativo das revendas por região, com mapa de calor por microrregião e filtros à esquerda.">Mapa</button>
+    <button id="tab-painel" onclick="App.view('painel')" data-tip="Indicadores e gráficos da base: status, cobertura VSM, funil de conversão e evolução mensal.">Dashboard</button>
+    <button id="tab-followup" onclick="App.view('followup')" data-tip="Agenda de contatos: o que está vencido, o que fazer hoje e quais prospects esfriaram.">Follow-up <span id="tab-followup-badge" class="tab-badge" hidden></span></button>
+    <button id="tab-prospec" onclick="App.view('prospec')" data-tip="Busca novas revendas Starlink na web (Google Maps e redes sociais) por região e as traz para a base.">Prospecção Starlink</button>
   </nav>
 
   <div class="topactions">
-    <button class="btn primary" onclick="App.novaEmpresa()">+ Novo lojista</button>
-    <button class="btn ghost" onclick="App.abrirImport()">Importar</button>
-    <button class="btn ghost" onclick="App.exportar()">Exportar</button>
-    <button class="btn ghost" onclick="App.modelo()">Modelo</button>
-    <button class="btn icon-btn ghost" title="Alternar tema" onclick="App.tema()">◐</button>
+    <button class="btn primary" onclick="App.novaEmpresa()" data-tip="Cadastra manualmente uma nova revenda/empresa na base, preenchendo a ficha.">+ Novo lojista</button>
+    <button class="btn ghost" onclick="App.abrirImport()" data-tip="Sobe uma planilha (.xlsx ou .csv) para criar ou atualizar várias empresas de uma vez. Use o 'Modelo' como base.">Importar</button>
+    <button class="btn ghost" onclick="App.exportar()" data-tip="Baixa em Excel as empresas da lista atual, já respeitando os filtros e a busca aplicados.">Exportar</button>
+    <button class="btn ghost" onclick="App.modelo()" data-tip="Baixa uma planilha modelo, com as colunas na ordem certa para preencher e depois importar.">Modelo</button>
+    <button class="btn icon-btn ghost" title="Alternar tema" data-tip="Alterna entre o tema claro e escuro da plataforma." onclick="App.tema()">◐</button>
     <input type="file" id="fileimport" accept=".xlsx,.csv" hidden onchange="App.fazerImport(this)">
   </div>
 </header>
@@ -45,21 +45,21 @@
     <!-- Coluna esquerda: filtros -->
     <aside class="col-left">
       <div class="card">
-        <div class="hd"><h2>Filtros</h2><button class="lnk" onclick="App.limparFiltros()">limpar</button></div>
+        <div class="hd"><h2>Filtros</h2><button class="lnk" onclick="App.limparFiltros()" data-tip="Remove todos os filtros e a busca, voltando à visão geral de todas as empresas.">limpar</button></div>
         <div class="bd filters">
-          <label class="fld"><span>Estado</span><select id="f-uf" onchange="App.ufMudou()"></select></label>
-          <label class="fld"><span>Microrregião</span><select id="f-mr"></select></label>
-          <label class="fld"><span>Segmento</span><select id="f-seg"></select></label>
-          <label class="fld"><span>Status comercial</span><select id="f-status"></select></label>
-          <label class="fld"><span>Potencial (vendas/mês)</span><select id="f-faixa"></select></label>
-          <label class="fld"><span>Já fez venda?</span>
+          <label class="fld"><span>Estado <span class="info" tabindex="0" role="button" aria-label="Ajuda: Estado" data-tip="Filtra por UF de atuação (PA, MA, TO, GO). Ao escolher um estado, o mapa desce para o detalhe de microrregiões e municípios dele."></span></span><select id="f-uf" onchange="App.ufMudou()"></select></label>
+          <label class="fld"><span>Microrregião <span class="info" tabindex="0" role="button" aria-label="Ajuda: Microrregião" data-tip="Agrupamento de municípios vizinhos (padrão IBGE). Refina o filtro dentro do estado escolhido. Escolha um estado primeiro."></span></span><select id="f-mr"></select></label>
+          <label class="fld"><span>Segmento <span class="info" tabindex="0" role="button" aria-label="Ajuda: Segmento" data-tip="Ramo de atividade da empresa (ex.: informática, telecom, materiais de construção). Ajuda a achar perfis aderentes à Starlink."></span></span><select id="f-seg"></select></label>
+          <label class="fld"><span>Status comercial <span class="info" tabindex="0" role="button" aria-label="Ajuda: Status comercial" data-tip="Etapa da empresa no funil: de prospectado a em negociação, aguardando documentação, credenciado ou perdido."></span></span><select id="f-status"></select></label>
+          <label class="fld"><span>Potencial (vendas/mês) <span class="info" tabindex="0" role="button" aria-label="Ajuda: Potencial de vendas por mês" data-tip="Faixa estimada de quantas antenas a revenda vende por mês (10+, 30+, 50+…). Use para priorizar quem tem maior potencial."></span></span><select id="f-faixa"></select></label>
+          <label class="fld"><span>Já fez venda? <span class="info" tabindex="0" role="button" aria-label="Ajuda: Já fez venda" data-tip="Mostra só quem já vendeu ao menos uma antena, ou só quem ainda não vendeu."></span></span>
             <select id="f-vendeu"><option value="">Todos</option><option value="sim">Sim — já vendeu</option><option value="nao">Não — ainda não</option></select>
           </label>
-          <label class="fld"><span>Responsável</span><select id="f-resp"></select></label>
-          <label class="fld"><span>Canal</span><select id="f-canal"></select></label>
-          <label class="chk2"><input type="checkbox" id="f-cred"> Só credenciados</label>
-          <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais</label>
-          <label class="chk2"><input type="checkbox" id="f-tel"> Internet / Telecom</label>
+          <label class="fld"><span>Responsável <span class="info" tabindex="0" role="button" aria-label="Ajuda: Responsável" data-tip="Filtra pelas empresas sob responsabilidade de cada pessoa da equipe interna."></span></span><select id="f-resp"></select></label>
+          <label class="fld"><span>Canal <span class="info" tabindex="0" role="button" aria-label="Ajuda: Canal" data-tip="Por onde a empresa opera ou compra (ex.: Vivensis/VSM, venda direta, indicação)."></span></span><select id="f-canal"></select></label>
+          <label class="chk2"><input type="checkbox" id="f-cred"> Só credenciados <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só credenciados" data-tip="Mostra apenas as revendas já credenciadas (homologadas como parceiras Starlink)."></span></label>
+          <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só potenciais" data-tip="Mostra apenas os leads ainda não credenciados que têm potencial de virar parceiros."></span></label>
+          <label class="chk2"><input type="checkbox" id="f-tel"> Internet / Telecom <span class="info" tabindex="0" role="button" aria-label="Ajuda: Internet e Telecom" data-tip="Mostra só empresas que já atuam com internet/telecom — perfil mais aderente para revender Starlink."></span></label>
         </div>
       </div>
 
@@ -68,7 +68,7 @@
     <!-- Centro: mapa -->
     <section class="card map-card">
       <div class="hd">
-        <h2>Mapa de prospecção</h2>
+        <h2>Mapa de prospecção <span class="info" tabindex="0" role="button" aria-label="Ajuda: Mapa de prospecção" data-tip="A cor de cada microrregião indica a concentração de empresas (mapa de calor); os pontos são empresas, coloridas pelo status. Clique numa região para filtrar; clique num ponto para abrir a ficha."></span></h2>
         <span class="map-ctx" id="map-ctx">Concentração de empresas por microrregião · marcadores = empresas por status</span>
       </div>
       <div class="mapbox" id="mapbox">
@@ -81,19 +81,20 @@
           <button class="mapbtn" id="mz-full" type="button" title="Tela cheia" aria-label="Tela cheia">⛶</button>
         </div>
       </div>
-      <div class="heatscale" aria-hidden="true">
-        <span class="lbl">Menor potencial</span>
+      <div class="heatscale">
+        <span class="lbl">Menos empresas</span>
         <i class="h1"></i><i class="h2"></i><i class="h3"></i><i class="h4"></i><i class="h5"></i><i class="h6"></i>
-        <span class="lbl">Maior potencial</span>
+        <span class="lbl">Mais empresas</span>
+        <span class="info" tabindex="0" role="button" aria-label="Ajuda: Escala de calor" data-tip="Escala de calor das microrregiões: quanto mais quente a cor, mais empresas mapeadas naquela região. No detalhe de um estado, a escala é relativa àquele estado."></span>
       </div>
       <div class="legend" id="legend"></div>
     </section>
 
     <!-- Direita: lista -->
     <aside class="card list-card">
-      <div class="hd"><h2 id="list-title">Empresas</h2></div>
+      <div class="hd"><h2 id="list-title">Empresas</h2><span class="info" tabindex="0" role="button" aria-label="Ajuda: Lista de empresas" data-tip="Empresas que atendem aos filtros e à busca atuais. Clique em qualquer linha para abrir a ficha completa e registrar contatos."></span></div>
       <div class="listsearch">
-        <input id="busca" type="search" placeholder="Buscar nome, CNPJ, cidade, responsável…" oninput="App.buscaDebounced()">
+        <input id="busca" type="search" placeholder="Buscar nome, CNPJ, cidade, responsável…" oninput="App.buscaDebounced()" data-tip="Busca livre por nome, CNPJ, cidade ou responsável, combinada com os filtros ao lado.">
       </div>
       <div class="lista" id="lista"></div>
     </aside>
@@ -106,7 +107,7 @@
   <div class="view-followup hidden" id="view-followup">
     <section class="card">
       <div class="hd">
-        <h2>Follow-up — o que fazer hoje</h2>
+        <h2>Follow-up — o que fazer hoje <span class="info" tabindex="0" role="button" aria-label="Ajuda: Follow-up" data-tip="Organiza seus contatos pela próxima ação definida na ficha: ações vencidas, de hoje, dos próximos 7 dias e prospects parados (sem contato há 14+ dias). Clique em qualquer item para abrir a ficha."></span></h2>
         <span class="map-ctx">Prospects ativos organizados pela próxima ação. Clique em qualquer um para abrir a ficha e registrar o contato.</span>
       </div>
       <div class="bd" id="fu-body">
@@ -124,7 +125,7 @@
       </div>
       <div class="bd">
         <div class="prospec-form">
-          <label class="fld full"><span>O que buscar</span>
+          <label class="fld full"><span>O que buscar <span class="info" tabindex="0" role="button" aria-label="Ajuda: O que buscar" data-tip="Termo pesquisado na web. Escreva como um cliente procuraria (ex.: 'onde comprar Starlink', 'revenda de antena'). Use as sugestões abaixo para começar."></span></span>
             <input id="p-termo" placeholder="Ex.: onde comprar Starlink · revenda de antena Starlink · internet via satélite">
           </label>
           <label class="fld"><span>Estado</span><select id="p-uf" onchange="App.pUfMudou()"></select></label>
@@ -133,7 +134,7 @@
             <datalist id="p-cidades"></datalist>
           </label>
           <label class="fld"><span>Microrregião</span><select id="p-mr"><option value="">Todas</option></select></label>
-          <label class="fld"><span>Onde buscar</span>
+          <label class="fld"><span>Onde buscar <span class="info" tabindex="0" role="button" aria-label="Ajuda: Onde buscar" data-tip="Fonte da busca: Google Maps (lojas com endereço e telefone), redes sociais (perfis no Instagram/Facebook) ou as duas combinadas."></span></span>
             <select id="p-escopo">
               <option value="maps">Google Maps</option>
               <option value="social">Redes sociais (Instagram/Facebook)</option>
@@ -154,7 +155,8 @@
         <div class="prospec-auto" id="p-auto">
           <span class="pa-ico">🔄</span>
           <span class="pa-txt" id="p-auto-txt">Varredura automática diária — carregando status…</span>
-          <button class="btn" id="p-runnow" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.varreduraAgora()">Rodar varredura agora</button>
+          <span class="info" tabindex="0" role="button" aria-label="Ajuda: Varredura automática" data-tip="Todo dia o sistema pesquisa sozinho novas revendas em um lote de cidades e as coloca na fila de 'Pendentes' para você revisar — elas não entram na base automaticamente."></span>
+          <button class="btn" id="p-runnow" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.varreduraAgora()" data-tip="Executa a varredura agora, sem esperar a rodada diária. Os achados vão para a fila de Pendentes.">Rodar varredura agora</button>
         </div>
       </div>
     </section>
@@ -162,7 +164,7 @@
     <!-- Pendentes da varredura automática (aguardando revisão antes de entrar na base) -->
     <section class="card prospec-pend" id="p-pendwrap">
       <div class="hd">
-        <h2 id="p-pend-title">Pendentes da varredura</h2>
+        <h2 id="p-pend-title">Pendentes da varredura <span class="info" tabindex="0" role="button" aria-label="Ajuda: Pendentes da varredura" data-tip="Fila de revisão: empresas achadas pela varredura automática. Confira cada uma e clique em 'Salvar' para adicioná-la à base, ou 'Descartar' para ignorá-la."></span></h2>
         <span class="map-ctx">Empresas encontradas pela varredura automática · revise e salve na base, ou descarte. Elas <b>não</b> entram na base sozinhas.</span>
         <div class="pend-acts" id="p-pend-acts" style="margin-left:auto;display:none">
           <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.salvarTodosPendentes()">+ Salvar todos na base</button>
@@ -175,7 +177,7 @@
     <!-- Mini-mapa dos resultados (plota as lojas encontradas por lat/lng) -->
     <section class="card prospec-mapa" id="p-mapwrap" style="display:none">
       <div class="hd">
-        <h2>Mapa dos resultados</h2>
+        <h2>Mapa dos resultados <span class="info" tabindex="0" role="button" aria-label="Ajuda: Mapa dos resultados" data-tip="Plota no mapa as lojas encontradas nesta busca que têm coordenadas. Azul = empresa nova; verde = já está na base. Clique num ponto para ir até o card dela."></span></h2>
         <span class="map-ctx" id="p-map-ctx">Lojas encontradas nesta busca · <span class="pm-leg"><i class="novo"></i> novo</span> <span class="pm-leg"><i class="base"></i> já na base</span></span>
       </div>
       <div class="pmapbox">
@@ -200,7 +202,7 @@
     <!-- Histórico automático de pesquisas (persistente, por região) -->
     <section class="card prospec-hist">
       <div class="hd">
-        <h2>Histórico de pesquisas</h2>
+        <h2>Histórico de pesquisas <span class="info" tabindex="0" role="button" aria-label="Ajuda: Histórico de pesquisas" data-tip="Toda busca fica salva aqui, por região. 'Consultar' reabre os resultados sem gastar nova consulta; 'Pesquisar de novo' refaz a busca; 'Excluir' remove do histórico (não afeta quem já está na base)."></span></h2>
         <span class="map-ctx">Cada busca é salva automaticamente · consulte, pesquise de novo ou exclua sem refazer a consulta</span>
         <label class="hist-uf"><span>Região</span>
           <select id="p-hist-uf" onchange="App.renderHist()"><option value="">Todas</option></select>

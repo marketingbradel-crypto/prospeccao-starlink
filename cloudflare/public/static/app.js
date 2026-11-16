@@ -24,6 +24,87 @@ const App = (() => {
   const corStatus = (st) => (B && B.status_cor[st]) || "cinza";
   const norm = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
 
+  // -------- Flags informativas (tooltips de ajuda) --------
+  // Ícone ⓘ reutilizável: use infoIco("explicação") ou infoIco("explicação","Título").
+  // O texto fica em data-tip; o Tip (abaixo) renderiza a caixa flutuante por delegação,
+  // então funciona também em conteúdo gerado dinamicamente (ficha, dashboard, etc.).
+  const infoIco = (tip, title) =>
+    `<span class="info" tabindex="0" role="button" aria-label="${esc(title ? title + ": " + tip : "Ajuda: " + tip)}"` +
+    ` data-tip="${esc(tip)}"${title ? ` data-tip-title="${esc(title)}"` : ""}></span>`;
+
+  // Controlador único da caixa de ajuda: hover/foco (desktop) e toque (mobile).
+  const Tip = (() => {
+    let box = null, cur = null, pinned = false;
+    const ensure = () => {
+      if (box) return box;
+      box = document.createElement("div");
+      box.className = "htip hidden";
+      box.setAttribute("role", "tooltip");
+      document.body.appendChild(box);
+      return box;
+    };
+    const show = (el) => {
+      if (!el) return;
+      const b = ensure();
+      const title = el.getAttribute("data-tip-title");
+      const body = el.getAttribute("data-tip") || "";
+      b.innerHTML = (title ? `<strong>${esc(title)}</strong>` : "") + `<span>${esc(body)}</span>`;
+      b.classList.remove("hidden");
+      place(el, b);
+      cur = el;
+    };
+    // Posiciona abaixo do elemento; vira para cima se não couber, e nunca ultrapassa as bordas.
+    const place = (el, b) => {
+      const r = el.getBoundingClientRect();
+      const bw = b.offsetWidth, bh = b.offsetHeight, gap = 9, m = 8;
+      let above = false, top = r.bottom + gap;
+      if (top + bh > innerHeight - m && r.top - gap - bh > m) { top = r.top - gap - bh; above = true; }
+      let left = r.left + r.width / 2 - bw / 2;
+      left = Math.max(m, Math.min(left, innerWidth - bw - m));
+      b.style.left = left + "px";
+      b.style.top = top + "px";
+      b.classList.toggle("above", above);
+      const ax = r.left + r.width / 2 - left;           // posição da seta relativa à caixa
+      b.style.setProperty("--ax", Math.max(12, Math.min(ax, bw - 12)) + "px");
+    };
+    const hide = () => { if (box) box.classList.add("hidden"); cur = null; pinned = false; };
+    const init = () => {
+      document.addEventListener("pointerover", (e) => {
+        if (e.pointerType === "touch") return;
+        const el = e.target.closest("[data-tip]");
+        if (el && el !== cur) show(el);
+      });
+      document.addEventListener("pointerout", (e) => {
+        if (e.pointerType === "touch" || pinned) return;
+        const el = e.target.closest("[data-tip]");
+        if (el && el === cur && !el.contains(e.relatedTarget)) hide();
+      });
+      document.addEventListener("focusin", (e) => {
+        const el = e.target.closest && e.target.closest("[data-tip]");
+        if (el) show(el);
+      });
+      document.addEventListener("focusout", (e) => {
+        const el = e.target.closest && e.target.closest("[data-tip]");
+        if (el && el === cur) hide();
+      });
+      // Toque/clique no ícone ⓘ: alterna a explicação (não dispara o clique do elemento-pai).
+      document.addEventListener("click", (e) => {
+        const ico = e.target.closest(".info[data-tip]");
+        if (ico) {
+          e.preventDefault(); e.stopPropagation();
+          if (cur === ico && pinned) hide();
+          else { show(ico); pinned = true; }
+          return;
+        }
+        if (pinned) hide();
+      }, true);
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") hide(); });
+      window.addEventListener("scroll", hide, true);
+      window.addEventListener("resize", hide);
+    };
+    return { init, hide };
+  })();
+
   let MUNI_NORMS = []; // municípios conhecidos (normalizados), do mais longo p/ o mais curto
 
   // Campo de cidade com mais de um município vira "<1ª cidade> e região". Reconhece
@@ -59,8 +140,9 @@ const App = (() => {
       { k: "endereco", l: "Endereço", full: 1 },
       { k: "cep", l: "CEP" }, { k: "cidade", l: "Cidade" },
       { k: "uf", l: "UF", type: "select", opts: "ufs" },
-      { k: "microrregiao", l: "Microrregião (automática)" },
-      { k: "latitude", l: "Latitude", type: "num" }, { k: "longitude", l: "Longitude", type: "num" },
+      { k: "microrregiao", l: "Microrregião (automática)", tip: "Preenchida automaticamente a partir da cidade e UF. Não precisa editar." },
+      { k: "latitude", l: "Latitude", type: "num", tip: "Coordenada usada para posicionar a empresa no mapa. Costuma vir preenchida pela busca; deixe em branco se não souber." },
+      { k: "longitude", l: "Longitude", type: "num", tip: "Coordenada usada para posicionar a empresa no mapa. Costuma vir preenchida pela busca; deixe em branco se não souber." },
     ]},
     { t: "Responsável na empresa", f: [
       { k: "resp_nome", l: "Nome", full: 1 },
@@ -68,30 +150,30 @@ const App = (() => {
       { k: "resp_whatsapp", l: "WhatsApp" }, { k: "resp_email", l: "E-mail" },
     ]},
     { t: "Informações comerciais", f: [
-      { k: "segmento", l: "Segmento", type: "select", opts: "segmentos", full: 1 },
+      { k: "segmento", l: "Segmento", type: "select", opts: "segmentos", full: 1, tip: "Ramo de atividade da empresa. Ajuda a avaliar aderência à Starlink e a filtrar a base." },
       { k: "produtos", l: "Principais produtos", full: 1 },
-      { k: "trabalha_telecom", l: "Trabalha com telecom/tecnologia?", type: "bool" },
-      { k: "ja_starlink", l: "Já comercializa Starlink?", type: "bool" },
-      { k: "exp_antenas", l: "Experiência com antenas?", type: "bool" },
-      { k: "equipe_tecnica", l: "Possui equipe técnica?", type: "bool" },
-      { k: "loja_fisica", l: "Possui loja física?", type: "bool" },
+      { k: "trabalha_telecom", l: "Trabalha com telecom/tecnologia?", type: "bool", tip: "Marque se a empresa já atua com internet, telecom ou tecnologia — perfil mais aderente para revender Starlink." },
+      { k: "ja_starlink", l: "Já comercializa Starlink?", type: "bool", tip: "Marque se a empresa já revende Starlink hoje (por outro distribuidor ou canal)." },
+      { k: "exp_antenas", l: "Experiência com antenas?", type: "bool", tip: "Marque se já tem experiência instalando antenas (parabólica, rádio, satélite)." },
+      { k: "equipe_tecnica", l: "Possui equipe técnica?", type: "bool", tip: "Marque se a empresa tem equipe própria para instalação e suporte técnico." },
+      { k: "loja_fisica", l: "Possui loja física?", type: "bool", tip: "Marque se a empresa tem ponto de venda físico aberto ao público." },
       { k: "qtd_filiais", l: "Qtd. filiais", type: "num" },
-      { k: "capacidade_vendas_mes", l: "Capacidade de vendas/mês" },
-      { k: "interesse_parceiro", l: "Interesse em ser parceiro", type: "select", opts: "interesse" },
-      { k: "origem_contato", l: "Origem do contato", type: "select", opts: "origens" },
+      { k: "capacidade_vendas_mes", l: "Capacidade de vendas/mês", tip: "Estimativa de quantas antenas a empresa conseguiria vender por mês. Base para classificar o potencial." },
+      { k: "interesse_parceiro", l: "Interesse em ser parceiro", type: "select", opts: "interesse", tip: "Nível de interesse que a empresa demonstrou em se tornar parceira Starlink." },
+      { k: "origem_contato", l: "Origem do contato", type: "select", opts: "origens", tip: "Como esta empresa entrou na base (ex.: varredura automática, indicação, cadastro manual)." },
     ]},
     { t: "Classificação e gestão", f: [
-      { k: "faixa_potencial", l: "Potencial (vendas/mês)", type: "select", opts: "faixas_potencial" },
-      { k: "ja_vendeu", l: "Já fez venda?", type: "bool" },
-      { k: "status", l: "Status comercial", type: "select", opts: "status" },
-      { k: "status_vivensis", l: "Status Vivensis", type: "select", opts: "status_vivensis" },
-      { k: "canal", l: "Canal", type: "select", opts: "canais" },
-      { k: "responsavel", l: "Responsável interno", type: "select", opts: "responsaveis" },
-      { k: "prioridade", l: "Prioridade", type: "select", opts: "prioridades" },
-      { k: "motivo_perda", l: "Motivo de perda", type: "select", opts: "motivos_perda" },
-      { k: "proxima_acao", l: "Próxima ação", full: 1 },
-      { k: "proxima_acao_data", l: "Data da próxima ação", type: "date" },
-      { k: "data_ultimo_contato", l: "Data do último contato", type: "date" },
+      { k: "faixa_potencial", l: "Potencial (vendas/mês)", type: "select", opts: "faixas_potencial", tip: "Classifica a empresa por volume estimado de vendas/mês. A ficha pode sugerir uma faixa automaticamente." },
+      { k: "ja_vendeu", l: "Já fez venda?", type: "bool", tip: "Marque quando a empresa fechar a primeira venda de antena." },
+      { k: "status", l: "Status comercial", type: "select", opts: "status", tip: "Etapa atual no funil (prospectado → negociação → credenciado etc.). Define a cor no mapa e na lista." },
+      { k: "status_vivensis", l: "Status Vivensis", type: "select", opts: "status_vivensis", tip: "Situação da revenda no portal Vivensis/VSM (credenciamento junto ao distribuidor)." },
+      { k: "canal", l: "Canal", type: "select", opts: "canais", tip: "Por onde a empresa opera ou compra (ex.: Vivensis/VSM, venda direta, indicação)." },
+      { k: "responsavel", l: "Responsável interno", type: "select", opts: "responsaveis", tip: "Pessoa da equipe interna encarregada de acompanhar esta empresa." },
+      { k: "prioridade", l: "Prioridade", type: "select", opts: "prioridades", tip: "Define a urgência de atenção (alta/média/baixa). Aparece como etiqueta no Follow-up." },
+      { k: "motivo_perda", l: "Motivo de perda", type: "select", opts: "motivos_perda", tip: "Se o lead foi perdido, registre o porquê — ajuda a entender objeções e melhorar a abordagem." },
+      { k: "proxima_acao", l: "Próxima ação", full: 1, tip: "O próximo passo combinado com a empresa. Aparece no Follow-up para você não esquecer." },
+      { k: "proxima_acao_data", l: "Data da próxima ação", type: "date", tip: "Quando fazer a próxima ação. Define quando ela aparece no Follow-up (hoje, próximos dias ou vencida)." },
+      { k: "data_ultimo_contato", l: "Data do último contato", type: "date", tip: "Data do contato mais recente. Sem contato há 14+ dias, a empresa entra em 'Parados' no Follow-up." },
       { k: "observacoes", l: "Observações", type: "textarea", full: 1 },
     ]},
   ];
@@ -100,6 +182,7 @@ const App = (() => {
   async function init() {
     const t = localStorage.getItem("tema");
     if (t) document.documentElement.setAttribute("data-theme", t);
+    Tip.init();
     B = await (await fetch("/api/bootstrap")).json();
     try { OUTLINES = await (await fetch("/static/state-outlines.json")).json(); } catch (e) { OUTLINES = {}; }
     montarFiltros();
@@ -140,7 +223,8 @@ const App = (() => {
     ["f-mr", "f-seg", "f-status", "f-faixa", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
     ["f-cred", "f-pot", "f-tel"].forEach(id => $(id).addEventListener("change", recarregar));
     $("legend").innerHTML = ["verde", "azul", "amarelo", "laranja", "vermelho"]
-      .map(c => `<span><i style="background:${hexCor(c)}"></i>${esc(B.cor_label[c])}</span>`).join("");
+      .map(c => `<span><i style="background:${hexCor(c)}"></i>${esc(B.cor_label[c])}</span>`).join("") +
+      infoIco("Cor de cada ponto no mapa = status comercial da empresa. Use os filtros à esquerda para isolar um status.", "Legenda de status");
   }
 
   async function ufMudou() {
@@ -184,15 +268,15 @@ const App = (() => {
   function renderKPIs() {
     const d = DASH;
     const cards = [
-      { v: d.total, l: "Empresas mapeadas", c: "var(--accent)" },
-      { v: d.potenciais, l: "Potenciais", c: hexCor("azul") },
-      { v: d.em_negociacao, l: "Em negociação", c: hexCor("amarelo") },
-      { v: d.credenciados, l: "Credenciados", c: hexCor("verde") },
-      { v: d.municipios, l: "Municípios alcançados", c: "var(--muted)" },
-      { v: d.taxa_conversao + "%", l: "Conversão → credenciado", c: hexCor("verde") },
+      { v: d.total, l: "Empresas mapeadas", c: "var(--accent)", tip: "Total de empresas cadastradas na base (visão geral, sem considerar os filtros do mapa)." },
+      { v: d.potenciais, l: "Potenciais", c: hexCor("azul"), tip: "Leads com potencial que ainda não foram credenciados." },
+      { v: d.em_negociacao, l: "Em negociação", c: hexCor("amarelo"), tip: "Empresas em conversa ativa para fechar o credenciamento." },
+      { v: d.credenciados, l: "Credenciados", c: hexCor("verde"), tip: "Revendas já homologadas como parceiras Starlink." },
+      { v: d.municipios, l: "Municípios alcançados", c: "var(--muted)", tip: "Quantidade de municípios distintos com ao menos uma empresa mapeada." },
+      { v: d.taxa_conversao + "%", l: "Conversão → credenciado", c: hexCor("verde"), tip: "Percentual da base que já virou credenciado (credenciados ÷ total de empresas)." },
     ];
     $("kpibar").innerHTML = cards.map(k =>
-      `<div class="kpi"><div class="v" style="color:${k.c}">${k.v}</div><div class="l"><span class="dot" style="background:${k.c}"></span>${k.l}</div></div>`
+      `<div class="kpi"><div class="v" style="color:${k.c}">${k.v}</div><div class="l"><span class="dot" style="background:${k.c}"></span>${k.l}${k.tip ? infoIco(k.tip, k.l) : ""}</div></div>`
     ).join("");
   }
 
@@ -614,23 +698,23 @@ const App = (() => {
       <div class="card wide"><div class="hd"><h2>Resumo geral</h2></div><div class="bd">
         <div class="statgrid">${stats.map(s => `<div class="stat"><div class="v">${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")}</div>
       </div></div>
-      <div class="card"><div class="hd"><h2>Por status comercial</h2></div><div class="bd">${statusData.length ? chart(statusData, l => hexCor(corStatus(l))) : '<div class="empty">Sem dados.</div>'}</div></div>
+      <div class="card"><div class="hd"><h2>Por status comercial${infoIco("Distribuição das empresas por etapa do funil comercial.", "Por status comercial")}</h2></div><div class="bd">${statusData.length ? chart(statusData, l => hexCor(corStatus(l))) : '<div class="empty">Sem dados.</div>'}</div></div>
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
-      <div class="card"><div class="hd"><h2>Cobertura VSM por estado</h2></div><div class="bd">
+      <div class="card"><div class="hd"><h2>Cobertura VSM por estado${infoIco("Quanto do universo de revendas do portal Vivensis/VSM já está mapeado na base, por estado. Barra = mapeadas ÷ universo conhecido.", "Cobertura VSM")}</h2></div><div class="bd">
         ${chartCobertura(d.cobertura_vsm)}
         <div class="l" style="opacity:.7;margin-top:8px">${d.total} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas no total.</div>
       </div></div>
-      <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
+      <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>
-      <div class="card wide"><div class="hd"><h2>Funil de conversão</h2></div><div class="bd">
+      <div class="card wide"><div class="hd"><h2>Funil de conversão${infoIco("Do total prospectado até os credenciados, passando pelas empresas em andamento. A taxa mostra quantos % da base chegaram a credenciado.", "Funil de conversão")}</h2></div><div class="bd">
         <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">
           <div class="stat"><div class="v">${d.total}</div><div class="l">Prospectados (base)</div></div>
           <div class="stat"><div class="v" style="color:${hexCor("amarelo")}">${d.em_negociacao + d.aguardando}</div><div class="l">Em andamento</div></div>
           <div class="stat"><div class="v" style="color:${hexCor("verde")}">${d.credenciados}</div><div class="l">Credenciados (${d.taxa_conversao}%)</div></div>
         </div>
       </div></div>
-      <div class="card wide"><div class="hd"><h2>Evolução mensal</h2></div><div class="bd">${chartMensal(d.serie_mensal)}</div></div>
-      <div class="card wide"><div class="hd"><h2>Tempo médio no funil</h2></div><div class="bd">
+      <div class="card wide"><div class="hd"><h2>Evolução mensal${infoIco("Novas empresas (leads) adicionadas e credenciamentos fechados a cada mês.", "Evolução mensal")}</h2></div><div class="bd">${chartMensal(d.serie_mensal)}</div></div>
+      <div class="card wide"><div class="hd"><h2>Tempo médio no funil${infoIco("Dias médios entre as etapas: do lead ao 1º contato, do lead ao credenciamento e do credenciamento à 1ª venda.", "Tempo médio no funil")}</h2></div><div class="bd">
         <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">
           ${tempoStat("Lead → 1º contato", tf.lead_contato)}
           ${tempoStat("Lead → credenciamento", tf.lead_cred)}
@@ -1147,16 +1231,17 @@ const App = (() => {
   // ==================== DRAWER: ficha / cadastro ====================
   function fieldHTML(f, val) {
     const id = "fld-" + f.k, cls = f.full ? "fld full" : "fld";
+    const ico = f.tip ? " " + infoIco(f.tip, f.l) : "";   // ⓘ ao lado do rótulo quando houver explicação
     if (f.type === "bool")
-      return `<div class="${cls}"><label>${f.l}</label><div class="chk"><input type="checkbox" id="${id}" ${val ? "checked" : ""}><span style="color:var(--muted);font-size:13px">Sim</span></div></div>`;
+      return `<div class="${cls}"><label>${f.l}${ico}</label><div class="chk"><input type="checkbox" id="${id}" ${val ? "checked" : ""}><span style="color:var(--muted);font-size:13px">Sim</span></div></div>`;
     if (f.type === "select") {
       const opts = `<option value=""></option>` + (B[f.opts] || []).map(o => `<option ${o === val ? "selected" : ""}>${esc(o)}</option>`).join("");
-      return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}</label><select id="${id}">${opts}</select></div>`;
+      return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}</label><select id="${id}">${opts}</select></div>`;
     }
     if (f.type === "textarea")
-      return `<div class="fld full"><label>${f.l}</label><textarea id="${id}" rows="3">${esc(val || "")}</textarea></div>`;
+      return `<div class="fld full"><label>${f.l}${ico}</label><textarea id="${id}" rows="3">${esc(val || "")}</textarea></div>`;
     const t = f.type === "num" ? "number" : f.type === "date" ? "date" : "text";
-    return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}</label><input type="${t}" id="${id}" value="${esc(val ?? "")}"></div>`;
+    return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}</label><input type="${t}" id="${id}" value="${esc(val ?? "")}"></div>`;
   }
 
   function formHTML(e) {
@@ -1221,11 +1306,13 @@ const App = (() => {
         <button class="lnk danger" onclick="App.delFilial(${f.id})">excluir</button></div>`).join("");
     return `
       <div class="statuspick" id="statuspick">${B.status.map(s =>
-        `<button class="${s === e.status ? "on" : ""}" style="${s === e.status ? "color:" + hexCor(corStatus(s)) : ""}" onclick="App.setStatus('${esc(s)}')"><span class="d" style="background:${hexCor(corStatus(s))}"></span>${esc(s)}</button>`).join("")}</div>
+        `<button class="${s === e.status ? "on" : ""}" style="${s === e.status ? "color:" + hexCor(corStatus(s)) : ""}" onclick="App.setStatus('${esc(s)}')"><span class="d" style="background:${hexCor(corStatus(s))}"></span>${esc(s)}</button>`).join("")}
+        ${infoIco("Clique em um status para mover a empresa de etapa no funil na hora. A cor dela muda no mapa e na lista.", "Status comercial")}</div>
 
       <div class="classbar">
         ${faixaPill(e.faixa_potencial)}
         <span class="pill-venda ${e.ja_vendeu ? "sim" : "nao"}">${e.ja_vendeu ? "✓ Já fez venda" : "Ainda não vendeu"}</span>
+        ${infoIco("Resumo da classificação: a faixa de potencial de vendas/mês e se a empresa já fez a primeira venda. Edite em 'Editar dados'.", "Classificação")}
       </div>
       ${faixaSugeridaHTML(e)}
 
@@ -1263,7 +1350,7 @@ const App = (() => {
         <button class="btn" style="margin-top:8px;background:var(--soft);color:var(--brand)" onclick="App.addFilial()">+ Adicionar filial</button>
       </div>
 
-      <div class="sec"><h4>Histórico de contatos</h4>
+      <div class="sec"><h4>Histórico de contatos${infoIco("Registre cada ligação, visita ou mensagem. A 'próxima ação' informada aqui alimenta o Follow-up e a data do último contato.", "Histórico de contatos")}</h4>
         <div class="timeline">${contatos || '<span class="hint">Sem registros ainda.</span>'}</div>
         <div class="grid2" style="margin-top:12px">
           <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>

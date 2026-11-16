@@ -366,3 +366,30 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .faixa-sug .fs-txt b{font-size:13px}
 .faixa-sug .fs-mot{font-size:11.5px;color:var(--muted)}
 .btn.sm{padding:5px 11px;font-size:12px;border-radius:7px}
+
+/* ---------- Flags informativas (tooltips de ajuda) ---------- */
+/* Ícone ⓘ discreto ao lado de campos, filtros, indicadores e ações. */
+.info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;
+  border:1px solid var(--line);background:var(--soft);color:var(--muted);font-size:10px;font-weight:700;font-style:normal;
+  font-family:var(--f);line-height:1;cursor:help;vertical-align:middle;margin-left:5px;flex:none;
+  user-select:none;-webkit-user-select:none;transition:color .12s,border-color .12s,background .12s}
+.info::before{content:"i"}
+.info:hover,.info:focus-visible{color:var(--accent);border-color:var(--accent);background:var(--accent-weak);outline:none}
+/* ⓘ sobre fundo escuro (topbar / abas) */
+.topbar .info,.viewtabs .info{border-color:rgba(255,255,255,.4);background:rgba(255,255,255,.12);color:#dceafc}
+.topbar .info:hover,.topbar .info:focus-visible,.viewtabs .info:hover,.viewtabs .info:focus-visible{background:rgba(255,255,255,.25);color:#fff;border-color:#fff}
+/* ⓘ dentro de títulos de seção (h2/h4): acompanha o tamanho do texto */
+.card .hd h2 .info,.sec h4 .info,.fu-grupo-hd h3 .info{margin-left:6px}
+
+/* Caixa flutuante da explicação (posicionada por JS; não corta nas bordas). */
+.htip{position:fixed;z-index:90;max-width:270px;background:var(--panel);color:var(--muted);
+  border:1px solid var(--line);border-radius:9px;padding:9px 12px;font-size:12.5px;line-height:1.45;font-weight:400;
+  box-shadow:0 6px 22px rgba(10,37,64,.18),0 1px 4px rgba(10,37,64,.1);pointer-events:none}
+[data-theme="dark"] .htip{box-shadow:0 8px 26px rgba(0,0,0,.55)}
+.htip strong{display:block;font-size:12.5px;font-weight:700;color:var(--fg);margin-bottom:2px}
+.htip.hidden{display:none}
+/* Seta apontando para o elemento (posição horizontal via --ax, calculada no JS). */
+.htip::after{content:"";position:absolute;left:var(--ax,20px);width:9px;height:9px;background:var(--panel);
+  border:1px solid var(--line);transform:rotate(45deg)}
+.htip:not(.above)::after{top:-5px;border-right:0;border-bottom:0}
+.htip.above::after{bottom:-5px;border-left:0;border-top:0}
