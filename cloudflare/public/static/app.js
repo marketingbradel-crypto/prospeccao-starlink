@@ -788,6 +788,10 @@ const App = (() => {
 
   const apPct = (p) => String(Math.round(p * 10) / 10).replace(".", ",");
 
+  // Empresa de origem VSM (import do portal Vivensis). Só essas contam no percentual
+  // de cobertura do universo VSM — as demais origens aparecem como contagem ao lado.
+  const isVsm = (e) => String(e.origem_contato || "").trim().toUpperCase().startsWith("VSM");
+
   function renderApuracao() {
     const box = $("apuracao");
     if (!box || !B) return;
@@ -801,26 +805,38 @@ const App = (() => {
     (DASH && DASH.cobertura_vsm || []).forEach(c => { universo[c.uf] = c.universo; });
     const universoTotal = (DASH && DASH.universo_vsm_total) || 0;
 
-    // Agrega a base filtrada por estado para a métrica ativa.
+    // Agrega a base filtrada por estado para a métrica ativa. Mantém um recorte só-VSM
+    // (porUFVsm/totalVsm) usado apenas na métrica "Empresas" para a cobertura do universo.
     const porUF = {}; ufs.forEach(u => porUF[u] = 0);
-    let total = 0;
+    const porUFVsm = {}; ufs.forEach(u => porUFVsm[u] = 0);
+    let total = 0, totalVsm = 0;
     for (const e of EMPRESAS) {
       const v = apVale(e, metric.key);
       if (!v) continue;
       total += v;
       const u = String(e.uf || "").trim().toUpperCase();
       if (u in porUF) porUF[u] += v;
+      if (isVsm(e)) {
+        totalVsm += v;
+        if (u in porUFVsm) porUFVsm[u] += v;
+      }
     }
     const base = EMPRESAS.length; // total de empresas no filtro atual
     const maxUF = Math.max(1, ...ufs.map(u => porUF[u]));
 
     // --- Indicador geral (hero) ---
-    let sub = "", metaBar = "";
+    // Na métrica "Empresas" o número grande e o % refletem SÓ origem VSM (para casar
+    // com o universo); as demais origens aparecem como contagem fora do percentual.
+    let sub = "", metaBar = "", bigNum = total;
     if (metric.key === "empresas") {
-      const pctMeta = universoTotal ? (total / universoTotal) * 100 : 0;
+      bigNum = totalVsm;
+      const outras = total - totalVsm;
+      const outrasTxt = outras > 0
+        ? `<span class="outras">+ ${outras} de outras origens (Forms/prospecção)</span>` : "";
+      const pctMeta = universoTotal ? (totalVsm / universoTotal) * 100 : 0;
       sub = universoTotal
-        ? `<span><b>${apPct(pctMeta)}%</b> do universo VSM</span><span>· ${total} de ${universoTotal} revendas</span>`
-        : `<span>empresas na seleção atual</span>`;
+        ? `<span><b>${apPct(pctMeta)}%</b> do universo VSM</span><span>· ${totalVsm} de ${universoTotal} revendas</span>${outrasTxt}`
+        : `<span>empresas VSM na seleção atual</span>${outrasTxt}`;
       metaBar = universoTotal
         ? `<div class="meta-track"><div class="meta-fill" style="width:${Math.min(100, pctMeta)}%"></div></div>` : "";
     } else {
@@ -833,13 +849,16 @@ const App = (() => {
     const cards = ufs.map(u => {
       const val = porUF[u];
       const nome = (B.uf_nomes && B.uf_nomes[u]) || u;
-      let pct, barW, foot;
+      let pct, barW, foot, topN = val;
       if (metric.key === "empresas") {
-        // % = atingimento da meta estadual (cobertura do universo VSM)
+        // % = atingimento da meta estadual (cobertura do universo VSM) — só origem VSM.
         const uni = universo[u] || 0;
-        pct = uni ? (val / uni) * 100 : 0;
+        const valVsm = porUFVsm[u];
+        const outras = val - valVsm;
+        topN = valVsm;
+        pct = uni ? (valVsm / uni) * 100 : 0;
         barW = Math.min(100, pct);
-        foot = `<span class="sm">${val} / ${uni || "—"}</span>`;
+        foot = `<span class="sm">${valVsm} / ${uni || "—"}${outras > 0 ? ` · +${outras} outras` : ""}</span>`;
       } else {
         // % = participação no total da métrica; barra relativa ao estado líder
         pct = total ? (val / total) * 100 : 0;
@@ -849,7 +868,7 @@ const App = (() => {
       const on = ufSel === u ? " on" : "";
       return `<button type="button" class="apu-state${on}" onclick="App.apSelUF('${u}')"
           title="${esc(nome)} — clique para filtrar o mapa e a lista por este estado">
-        <div class="top"><span class="uf">${esc(u)}</span><span class="n">${val}</span></div>
+        <div class="top"><span class="uf">${esc(u)}</span><span class="n">${topN}</span></div>
         <div class="track"><div class="fill" style="width:${barW}%;background:${corHex}"></div></div>
         <div class="foot">${foot}<span class="pct" style="color:${corHex}">${apPct(pct)}%</span></div>
       </button>`;
@@ -867,12 +886,12 @@ const App = (() => {
         <div class="apu-metrics" role="group" aria-label="Métrica">${chips}</div>
         <div class="apu-hero">
           <div class="tt">${esc(metric.tit)}</div>
-          <div class="big">${total}</div>
+          <div class="big">${bigNum}</div>
           <div class="sub">${sub}</div>
           ${metaBar}
         </div>
         <div>
-          <div class="apu-sec-tt">Prospecção por estado${infoIco("Cada cartão mostra o valor da métrica no estado e a barra de desempenho. Na métrica 'Empresas', o percentual é o atingimento da meta (cobertura do universo VSM); nas demais, é a participação no total.", "Prospecção por estado")}</div>
+          <div class="apu-sec-tt">Prospecção por estado${infoIco("Cada cartão mostra o valor da métrica no estado e a barra de desempenho. Na métrica 'Empresas', o percentual é a cobertura do universo VSM e considera só revendas de origem VSM (as outras origens aparecem como '+N outras', fora do percentual); nas demais métricas, é a participação no total.", "Prospecção por estado")}</div>
           ${total || base ? `<div class="apu-states">${cards}</div>` : `<div class="apu-empty">Nenhuma empresa para os filtros atuais.</div>`}
         </div>
       </div>`;
@@ -911,7 +930,7 @@ const App = (() => {
       const nome = (B.uf_nomes && B.uf_nomes[c.uf]) || c.uf;
       return `<div class="row"><span class="lbl" title="${esc(nome)}">${esc(c.uf)}</span>
         <span class="track"><span class="fill" style="width:${Math.min(100, c.pct)}%;background:${corPct(c.pct)}"></span></span>
-        <span class="val" title="${c.mapeadas} de ${c.universo} revendas do VSM mapeadas"><span class="num">${c.mapeadas} / ${c.universo}</span><span class="sep">|</span><span class="pct" style="color:${corPct(c.pct)}">${fmtPct(c.pct)}%</span></span></div>`;
+        <span class="val" title="${c.mapeadas} de ${c.universo} revendas do VSM mapeadas${c.outras > 0 ? ` · +${c.outras} de outras origens (não contam no %)` : ""}"><span class="num">${c.mapeadas} / ${c.universo}</span><span class="sep">|</span><span class="pct" style="color:${corPct(c.pct)}">${fmtPct(c.pct)}%</span></span></div>`;
     }).join("") + `</div>`;
   }
 
@@ -972,7 +991,7 @@ const App = (() => {
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
       <div class="card wide"><div class="hd"><h2>Cobertura VSM por estado${infoIco("Quanto do universo de revendas do portal Vivensis/VSM já está mapeado na base, por estado. Barra = mapeadas ÷ universo conhecido.", "Cobertura VSM")}</h2></div><div class="bd">
         ${chartCobertura(d.cobertura_vsm)}
-        <div class="l" style="opacity:.7;margin-top:8px">${d.total} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas no total.</div>
+        <div class="l" style="opacity:.7;margin-top:8px">${d.mapeadas_vsm_total || 0} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas${(d.total - (d.mapeadas_vsm_total || 0)) > 0 ? ` · + ${d.total - (d.mapeadas_vsm_total || 0)} empresas de outras origens (fora do %)` : ""}.</div>
       </div></div>
       <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>

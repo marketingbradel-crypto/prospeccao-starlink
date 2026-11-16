@@ -840,6 +840,11 @@ app.get("/api/dashboard", async (c) => {
   for (const s of L.STATUS) porStatus[s] = 0;
   const porUf: Record<string, number> = {};
   for (const u of L.UFS) porUf[u] = 0;
+  // Cobertura VSM conta SÓ empresas de origem VSM (origem_contato "VSM Vivensis").
+  // As demais origens (Formulário, Prospecção ativa, etc.) entram nas contagens
+  // totais, mas NÃO no percentual do universo VSM — senão a cobertura passaria de 100%.
+  const porUfVsm: Record<string, number> = {};
+  for (const u of L.UFS) porUfVsm[u] = 0;
   const porSegmento: Record<string, number> = {};
   const municipios = new Set<string>();
   const microrregioes = new Set<string>();
@@ -860,6 +865,8 @@ app.get("/api/dashboard", async (c) => {
     porStatus[st] = (porStatus[st] ?? 0) + 1;
     const uf = (r.uf || "").toUpperCase();
     if (uf) porUf[uf] = (porUf[uf] ?? 0) + 1;
+    const ehVsm = String(r.origem_contato || "").trim().toUpperCase().startsWith("VSM");
+    if (uf && ehVsm) porUfVsm[uf] = (porUfVsm[uf] ?? 0) + 1;
     const seg = r.segmento || "—";
     porSegmento[seg] = (porSegmento[seg] ?? 0) + 1;
     if (r.cidade) municipios.add(`${uf}|${String(r.cidade).trim().toLowerCase()}`);
@@ -925,14 +932,19 @@ app.get("/api/dashboard", async (c) => {
     cred_venda: { dias: media(sCredVenda, nCredVenda), n: nCredVenda },
   };
 
-  // Cobertura VSM: mapeadas (por_uf) vs universo de revendas no portal Vivensis.
+  // Cobertura VSM: mapeadas = SÓ empresas de origem VSM (porUfVsm) vs universo de
+  // revendas no portal Vivensis. `total_uf` e `outras` expõem as demais origens para
+  // a UI mostrar as duas origens sem que elas entrem no percentual de cobertura.
   const coberturaVsm = L.UFS.map((u) => {
     const universo = L.UNIVERSO_VSM[u] ?? 0;
-    const mapeadas = porUf[u] ?? 0;
+    const mapeadas = porUfVsm[u] ?? 0;
+    const total_uf = porUf[u] ?? 0;
+    const outras = Math.max(0, total_uf - mapeadas);
     const pct = universo ? Math.round((1000.0 * mapeadas) / universo) / 10 : 0.0;
-    return { uf: u, mapeadas, universo, pct };
+    return { uf: u, mapeadas, universo, pct, total_uf, outras };
   });
   const universoVsmTotal = L.UFS.reduce((s, u) => s + (L.UNIVERSO_VSM[u] ?? 0), 0);
+  const mapeadasVsmTotal = L.UFS.reduce((s, u) => s + (porUfVsm[u] ?? 0), 0);
 
   return c.json({
     total, potenciais, credenciados, em_negociacao: emNegociacao, aguardando, perdidos,
@@ -941,6 +953,7 @@ app.get("/api/dashboard", async (c) => {
     serie_mensal: serieMensal, tempos_funil: temposFunil,
     por_faixa: porFaixa, sem_faixa: semFaixa, ja_venderam: jaVenderam,
     cobertura_vsm: coberturaVsm, universo_vsm_total: universoVsmTotal,
+    mapeadas_vsm_total: mapeadasVsmTotal,
   });
 });
 

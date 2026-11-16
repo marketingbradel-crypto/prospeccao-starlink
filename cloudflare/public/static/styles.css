@@ -94,6 +94,7 @@ main{padding:14px 20px 28px}
 [data-theme="dark"] .apu-hero .big{color:var(--accent)}
 .apu-hero .sub{font-size:12.5px;color:var(--muted);margin-top:4px;display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
 .apu-hero .sub b{color:var(--fg);font-weight:700}
+.apu-hero .sub .outras{flex-basis:100%;color:var(--muted);opacity:.9}
 .apu-hero .meta-track{height:7px;background:var(--line);border-radius:999px;overflow:hidden;margin-top:9px}
 .apu-hero .meta-fill{height:100%;border-radius:999px;background:var(--brand);transition:width .5s}
 [data-theme="dark"] .apu-hero .meta-fill{background:var(--accent)}
