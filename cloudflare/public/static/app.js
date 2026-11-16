@@ -876,6 +876,42 @@ const App = (() => {
       </button>`;
     }).join("");
 
+    // --- Bloco "Formulários" (empresas de outras origens, fora do VSM) ---
+    // Espelha o cartão principal, mas conta SÓ as empresas que não vieram do VSM
+    // (origem Forms/prospecção). Só faz sentido na métrica "Empresas".
+    let formsSection = "";
+    if (metric.key === "empresas") {
+      const formsHex = hexCor("laranja"); // cor distinta do bloco VSM (azul)
+      const outrasTotal = total - totalVsm;
+      const maxOutras = Math.max(1, ...ufs.map(u => porUF[u] - porUFVsm[u]));
+      const formsCards = ufs
+        .map(u => ({ u, n: porUF[u] - porUFVsm[u] }))
+        .filter(x => x.n > 0)
+        .sort((a, b) => b.n - a.n)
+        .map(({ u, n }) => {
+          const nome = (B.uf_nomes && B.uf_nomes[u]) || u;
+          const pct = outrasTotal ? (n / outrasTotal) * 100 : 0;
+          const barW = (n / maxOutras) * 100;
+          const on = ufSel === u ? " on" : "";
+          return `<button type="button" class="apu-state${on}" onclick="App.apSelUF('${u}')"
+              title="${esc(nome)} — empresas de formulários/prospecção neste estado; clique para filtrar o mapa e a lista">
+            <div class="top"><span class="uf">${esc(u)}</span><span class="n">${n}</span></div>
+            <div class="track"><div class="fill" style="width:${barW}%;background:${formsHex}"></div></div>
+            <div class="foot"><span class="sm">${apPct(pct)}% do total</span><span class="pct" style="color:${formsHex}">${apPct(pct)}%</span></div>
+          </button>`;
+        }).join("");
+      formsSection = `
+        <div class="apu-hero" style="margin-top:14px;border-left:3px solid ${formsHex}">
+          <div class="tt">TOTAL DE EMPRESAS DE FORMULÁRIOS</div>
+          <div class="big" style="color:${formsHex}">${outrasTotal}</div>
+          <div class="sub"><span>captadas fora do VSM (Forms/prospecção)</span></div>
+        </div>
+        <div>
+          <div class="apu-sec-tt">Formulários por estado${infoIco("Empresas que não vieram do portal VSM (origem Forms/prospecção), por estado. Clique num cartão para filtrar o mapa e a lista.", "Formulários por estado")}</div>
+          ${outrasTotal ? `<div class="apu-states">${formsCards}</div>` : `<div class="apu-empty">Nenhuma empresa de formulários nos filtros atuais.</div>`}
+        </div>`;
+    }
+
     const chips = AP_METRICS.map(m =>
       `<button type="button" class="${m.key === apMetric ? "on" : ""}" onclick="App.apMetrica('${m.key}')">${esc(m.label)}</button>`
     ).join("");
@@ -896,6 +932,7 @@ const App = (() => {
           <div class="apu-sec-tt">Prospecção por estado${infoIco("Cada cartão mostra o valor da métrica no estado e a barra de desempenho. Na métrica 'Empresas', o percentual é a cobertura do universo VSM e considera só revendas de origem VSM (as outras origens aparecem como '+N outras', fora do percentual); nas demais métricas, é a participação no total.", "Prospecção por estado")}</div>
           ${total || base ? `<div class="apu-states">${cards}</div>` : `<div class="apu-empty">Nenhuma empresa para os filtros atuais.</div>`}
         </div>
+        ${formsSection}
       </div>`;
   }
 
