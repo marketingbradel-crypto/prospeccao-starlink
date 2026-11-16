@@ -71,7 +71,7 @@ main{padding:14px 20px 28px}
 @media(max-width:1000px){.view-mapa{grid-template-columns:1fr}.view-mapa .map-card,.view-mapa .list-card{grid-column:auto}}
 .col-left{display:flex;flex-direction:column;gap:14px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
-.card .hd{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.card .hd{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:12px 14px;border-bottom:1px solid var(--line)}
 .card .hd h2{flex:1}
 .card .bd{padding:14px}
 
