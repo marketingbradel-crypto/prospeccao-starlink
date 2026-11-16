@@ -915,12 +915,21 @@ const App = (() => {
   }
 
   // ==================== PAINEL (dashboard) ====================
-  function chart(dados, corFn) {
-    const max = Math.max(1, ...dados.map(d => d[1]));
-    return `<div class="chart">` + dados.map(([lbl, v]) =>
-      `<div class="row"><span class="lbl" title="${esc(lbl)}">${esc(lbl)}</span>
-        <span class="track"><span class="fill" style="width:${Math.round(v / max * 100)}%;background:${corFn(lbl)}"></span></span>
-        <span class="val">${v}</span></div>`).join("") + `</div>`;
+  function chart(dados, corFn, opts) {
+    opts = opts || {};
+    // Rótulos fora da escala: não entram no cálculo do máximo (ex.: "Sem classificação",
+    // que é gigante e achataria as demais barras até sumirem). A barra deles satura em 100%.
+    const foraDaEscala = opts.foraDaEscala || [];
+    const base = dados.filter(d => !foraDaEscala.includes(d[0]));
+    const max = Math.max(1, ...(base.length ? base : dados).map(d => d[1]));
+    return `<div class="chart">` + dados.map(([lbl, v]) => {
+      const pct = Math.min(100, Math.round(v / max * 100));
+      // min-width garante que qualquer número > 0 continue visível mesmo sendo baixo.
+      const estilo = v > 0 ? `width:${pct}%;min-width:10px;background:${corFn(lbl)}` : "width:0";
+      return `<div class="row"><span class="lbl" title="${esc(lbl)}">${esc(lbl)}</span>
+        <span class="track"><span class="fill" style="${estilo}"></span></span>
+        <span class="val">${v}</span></div>`;
+    }).join("") + `</div>`;
   }
 
   // Cobertura VSM: barra por estado com mapeadas / universo (revendas no portal Vivensis).
@@ -1019,7 +1028,7 @@ const App = (() => {
         ${chartOrigemForms(d.cobertura_vsm)}
         <div class="l" style="opacity:.7;margin-top:8px">${(d.cobertura_vsm || []).reduce((s, c) => s + (c.outras || 0), 0)} empresas captadas por formulário (origem fora do VSM).</div>
       </div></div>
-      <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)") : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
+      <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)", { foraDaEscala: ["Sem classificação"] }) : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Funil de conversão${infoIco("Do total prospectado até os credenciados, passando pelas empresas em andamento. A taxa mostra quantos % da base chegaram a credenciado.", "Funil de conversão")}</h2></div><div class="bd">
         <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">

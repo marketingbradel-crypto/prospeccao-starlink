@@ -71,9 +71,11 @@
           </label>
           <label class="fld"><span>Responsável <span class="info" tabindex="0" role="button" aria-label="Ajuda: Responsável" data-tip="Filtra pelas empresas sob responsabilidade de cada pessoa da equipe interna."></span></span><select id="f-resp"></select></label>
           <label class="fld"><span>Canal <span class="info" tabindex="0" role="button" aria-label="Ajuda: Canal" data-tip="Por onde a empresa opera ou compra (ex.: Vivensis/VSM, venda direta, indicação)."></span></span><select id="f-canal"></select></label>
-          <label class="chk2"><input type="checkbox" id="f-cred"> Só credenciados <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só credenciados" data-tip="Mostra apenas as revendas já credenciadas (homologadas como parceiras Starlink)."></span></label>
-          <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só potenciais" data-tip="Mostra apenas os leads ainda não credenciados que têm potencial de virar parceiros."></span></label>
-          <label class="chk2"><input type="checkbox" id="f-tel"> Internet / Telecom <span class="info" tabindex="0" role="button" aria-label="Ajuda: Internet e Telecom" data-tip="Mostra só empresas que já atuam com internet/telecom — perfil mais aderente para revender Starlink."></span></label>
+          <div class="chkrow">
+            <label class="chk2"><input type="checkbox" id="f-cred"> Só credenciados <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só credenciados" data-tip="Mostra apenas as revendas já credenciadas (homologadas como parceiras Starlink)."></span></label>
+            <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só potenciais" data-tip="Mostra apenas os leads ainda não credenciados que têm potencial de virar parceiros."></span></label>
+            <label class="chk2"><input type="checkbox" id="f-tel"> Internet / Telecom <span class="info" tabindex="0" role="button" aria-label="Ajuda: Internet e Telecom" data-tip="Mostra só empresas que já atuam com internet/telecom — perfil mais aderente para revender Starlink."></span></label>
+          </div>
         </div>
       </div>
 
@@ -167,7 +169,6 @@
           <button class="chip-btn" onclick="App.sugProspec('loja de internet via satélite')">internet via satélite</button>
           <button class="chip-btn" onclick="App.sugProspec('instalação de Starlink')">instalação de Starlink</button>
           <button class="chip-btn" onclick="App.sugProspecSocial('loja de informática')">loja no Instagram</button>
-          <button class="chip-btn" onclick="App.sugProspecSocial('provedor de internet')">provedor no Instagram</button>
         </div>
         <div class="prospec-auto" id="p-auto">
           <span class="pa-txt" id="p-auto-txt">Varredura automática diária — carregando status…</span>

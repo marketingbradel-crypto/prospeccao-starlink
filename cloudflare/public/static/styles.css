@@ -122,11 +122,13 @@ main{padding:14px 20px 28px}
 .card .bd{padding:14px}
 
 /* ---------- Filtros ---------- */
-.filters{display:flex;flex-direction:column;gap:10px}
-.filters .fld{display:flex;flex-direction:column;gap:3px}
+.filters{display:flex;flex-direction:column;gap:12px}
+.filters .fld{display:flex;flex-direction:column;gap:4px}
 .filters .fld span{font-size:11.5px;color:var(--muted);font-weight:600}
 .filters select{padding:7px 8px;border:1px solid var(--line);border-radius:7px;background:var(--soft)}
-.chk2{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-top:1px}
+/* Checkboxes em linha (horizontal, quebra conforme a largura) */
+.chkrow{display:flex;flex-wrap:wrap;gap:8px 14px;margin-top:2px;padding-top:12px;border-top:1px solid var(--line)}
+.chk2{display:flex;align-items:center;gap:7px;font-size:12.5px;cursor:pointer}
 .chk2 input{width:16px;height:16px;accent-color:var(--accent)}
 
 .empty{padding:24px 10px;text-align:center;color:var(--muted);font-size:13px}
@@ -169,15 +171,16 @@ text.rg-lbl{fill:#1b1205;font-family:var(--f);font-weight:700;font-size:calc(12.
   paint-order:stroke;stroke:#fff;stroke-width:2.6px;stroke-linejoin:round;vector-effect:non-scaling-stroke;pointer-events:none}
 text.rg-lbl tspan.v{font-family:var(--fnum);font-weight:800}
 /* Escala do heatmap */
-.heatscale{display:flex;align-items:center;justify-content:center;gap:4px;flex-wrap:wrap;padding:6px 14px 2px;color:var(--muted);font-size:11.5px}
+.heatscale{display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:12px 14px 8px;margin-top:4px;border-top:1px solid var(--line);color:var(--muted);font-size:11.5px}
 .heatscale i{width:24px;height:11px;display:inline-block;border-radius:2px;border:1px solid var(--line)}
-.heatscale .lbl{margin:0 6px}
+.heatscale .lbl{margin:0 8px}
+.heatscale .lbl:first-child{margin-left:0}
 .heatscale .h1{background:var(--heat1)}.heatscale .h2{background:var(--heat2)}.heatscale .h3{background:var(--heat3)}
 .heatscale .h4{background:var(--heat4)}.heatscale .h5{background:var(--heat5)}.heatscale .h6{background:var(--heat6)}
 circle.mk{r:calc(5px / var(--z,1));stroke:#fff;stroke-width:1.4;vector-effect:non-scaling-stroke;cursor:pointer}
 circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 [data-theme="dark"] circle.mk{stroke:#0e141c}
-.legend{display:flex;flex-wrap:wrap;gap:6px 16px;padding:4px 14px 14px;font-size:12.5px;color:var(--muted)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;padding:8px 14px 14px;font-size:12.5px;color:var(--muted)}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:5px;vertical-align:-1px;border:1px solid rgba(0,0,0,.12)}
 
 /* ---------- Tooltip ---------- */
