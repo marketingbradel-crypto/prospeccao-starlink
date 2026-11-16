@@ -331,8 +331,13 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
   margin-left:5px;border-radius:9px;background:#e8811f;color:#fff;font-size:10.5px;font-weight:700;vertical-align:middle}
 .view-followup .bd{padding:6px 14px 14px}
 .fu-grupo{margin-top:14px}
-.fu-grupo-hd{display:flex;align-items:center;gap:9px;margin:4px 0 8px}
-.fu-grupo-hd h3{font-size:14px;margin:0}
+.fu-grupo-hd{margin:4px 0 8px}
+.fu-grupo-top{display:flex;align-items:center;gap:9px}
+.fu-grupo-hd h3{font-size:14px;margin:0;white-space:nowrap}
+.fu-grupo-sub{color:var(--muted);font-size:11.5px;margin-top:2px}
+.fu-toolbar{display:flex;justify-content:flex-end;margin:2px 0 6px}
+.fu-filtro{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
+.fu-filtro select{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
 .fu-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 7px;
   border-radius:10px;background:var(--soft);color:var(--brand);font-size:12px;font-weight:700}
 .fu-venc .fu-count{background:#fdecec;color:#cc3a26}

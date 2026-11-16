@@ -17,12 +17,21 @@ const App = (() => {
   let HIST = [];           // histórico de pesquisas (metadados), por região
   let curPesquisa = null;  // id da pesquisa atualmente exibida nos resultados
   let PEND = [];           // pendentes da varredura automática (aguardando revisão)
+  let FU = null;           // dados do follow-up carregados (/api/follow-up)
+  let fuUF = "";           // filtro de estado aplicado no follow-up ("" = todos)
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const hexCor = (cor) => (B && B.cor_hex[cor]) || "#9aa0ac";
   const corStatus = (st) => (B && B.status_cor[st]) || "cinza";
   const norm = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  // Formata "2026-11-16 06:01:02" (ou ISO) para "16/11/2026 06:01". Sem hora, só a data.
+  const fmtData = (s) => {
+    if (!s) return "";
+    const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+    if (!m) return String(s);
+    return `${m[3]}/${m[2]}/${m[1]}` + (m[4] ? ` ${m[4]}:${m[5]}` : "");
+  };
 
   // -------- Flags informativas (tooltips de ajuda) --------
   // Ícone ⓘ reutilizável: use infoIco("explicação") ou infoIco("explicação","Título").
@@ -700,7 +709,7 @@ const App = (() => {
       </div></div>
       <div class="card"><div class="hd"><h2>Por status comercial${infoIco("Distribuição das empresas por etapa do funil comercial.", "Por status comercial")}</h2></div><div class="bd">${statusData.length ? chart(statusData, l => hexCor(corStatus(l))) : '<div class="empty">Sem dados.</div>'}</div></div>
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
-      <div class="card"><div class="hd"><h2>Cobertura VSM por estado${infoIco("Quanto do universo de revendas do portal Vivensis/VSM já está mapeado na base, por estado. Barra = mapeadas ÷ universo conhecido.", "Cobertura VSM")}</h2></div><div class="bd">
+      <div class="card wide"><div class="hd"><h2>Cobertura VSM por estado${infoIco("Quanto do universo de revendas do portal Vivensis/VSM já está mapeado na base, por estado. Barra = mapeadas ÷ universo conhecido.", "Cobertura VSM")}</h2></div><div class="bd">
         ${chartCobertura(d.cobertura_vsm)}
         <div class="l" style="opacity:.7;margin-top:8px">${d.total} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas no total.</div>
       </div></div>
@@ -739,26 +748,53 @@ const App = (() => {
     let d;
     try { d = await (await fetch("/api/follow-up")).json(); }
     catch (e) { box.innerHTML = `<div class="empty">Não foi possível carregar o follow-up.</div>`; return; }
+    FU = d;
     atualizarBadgeFollowUp(d);
+    renderFollowUp();
+  }
+
+  const FU_GRUPOS = [
+    { k: "vencidas", tit: "Vencidas", cls: "fu-venc", desc: "ação com data no passado" },
+    { k: "hoje_list", tit: "Para hoje", cls: "fu-hoje", desc: "ação marcada para hoje" },
+    { k: "proximas", tit: "Próximos 7 dias", cls: "fu-prox", desc: "ação agendada em breve" },
+    { k: "parados", tit: "Parados", sub: "sem contato há 14+ dias", cls: "fu-parado", desc: "sem próxima ação marcada" },
+  ];
+
+  function fuFiltrarUF(v) { fuUF = v || ""; renderFollowUp(); }
+
+  function renderFollowUp() {
+    const box = $("fu-body");
+    const d = FU;
+    if (!d) return;
     if (!d.total) {
       box.innerHTML = `<div class="empty">Tudo em dia 🎉 — nenhuma ação vencida ou pendente. Marque a "próxima ação" dos prospects na ficha para acompanhá-los aqui.</div>`;
       return;
     }
-    const grupos = [
-      { k: "vencidas", tit: "⚠️ Vencidas", cls: "fu-venc", desc: "ação com data no passado" },
-      { k: "hoje_list", tit: "📅 Para hoje", cls: "fu-hoje", desc: "ação marcada para hoje" },
-      { k: "proximas", tit: "⏭️ Próximos 7 dias", cls: "fu-prox", desc: "ação agendada em breve" },
-      { k: "parados", tit: "❄️ Parados (sem contato há 14+ dias)", cls: "fu-parado", desc: "sem próxima ação marcada" },
-    ];
-    box.innerHTML = grupos.map(g => {
-      const lista = d[g.k] || [];
+    // Estados presentes no follow-up (para o filtro)
+    const ufs = [...new Set(FU_GRUPOS.flatMap(g => d[g.k] || []).map(x => x.uf).filter(Boolean))].sort();
+    const filtro = `
+      <div class="fu-toolbar">
+        <label class="fu-filtro">Estado
+          <select id="fu-uf" onchange="App.fuFiltrarUF(this.value)">
+            <option value="">Todos</option>
+            ${ufs.map(u => `<option value="${esc(u)}"${u === fuUF ? " selected" : ""}>${esc(u)}</option>`).join("")}
+          </select>
+        </label>
+      </div>`;
+    const corpo = FU_GRUPOS.map(g => {
+      let lista = d[g.k] || [];
+      if (fuUF) lista = lista.filter(x => (x.uf || "") === fuUF);
       if (!lista.length) return "";
       return `
         <div class="fu-grupo ${g.cls}">
-          <div class="fu-grupo-hd"><h3>${g.tit}</h3><span class="fu-count">${lista.length}</span><span class="hint">${g.desc}</span></div>
+          <div class="fu-grupo-hd">
+            <div class="fu-grupo-top"><h3>${g.tit}</h3><span class="fu-count">${lista.length}</span><span class="hint">${g.desc}</span></div>
+            ${g.sub ? `<div class="fu-grupo-sub">${g.sub}</div>` : ""}
+          </div>
           <div class="fu-rows">${lista.map(fuRow).join("")}</div>
         </div>`;
-    }).join("") || `<div class="empty">Tudo em dia 🎉</div>`;
+    }).join("");
+    box.innerHTML = filtro + (corpo || `<div class="empty">Nenhum prospect ${fuUF ? "em " + esc(fuUF) : "encontrado"}.</div>`);
   }
 
   function atualizarBadgeFollowUp(d) {
@@ -824,7 +860,7 @@ const App = (() => {
     const partes = [`Varredura automática <b>diária</b> (${s.batch} cidades/dia)`];
     if (s.ultima) {
       const st = s.stats || {};
-      partes.push(`última: ${esc(s.ultima)}`);
+      partes.push(`última: ${esc(fmtData(s.ultima))}`);
       if (typeof st.pendentes === "number") partes.push(`${st.pendentes} pendente(s) p/ revisar, ${st.ja_na_base || 0} já na base`);
     } else {
       partes.push("ainda não executada");
@@ -1510,7 +1546,7 @@ const App = (() => {
     addContato, delContato, addFilial, delFilial, excluir, realce,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
-    varreduraAgora,
+    varreduraAgora, fuFiltrarUF,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
   };
