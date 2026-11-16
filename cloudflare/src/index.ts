@@ -167,19 +167,22 @@ async function empresaDupCnpj(db: D1Database, cnpjNorm: string, excluirId?: numb
   return row ? (row.id as number) : null;
 }
 
-async function proximoCodigo(db: D1Database): Promise<string> {
+// Proximo numero de codigo REV: MAX(numero)+1. Usa o MAIOR numero existente
+// (nao o codigo da ultima linha por id), evitando codigos duplicados.
+async function proximoCodigoNum(db: D1Database): Promise<number> {
   const row = await db
-    .prepare("SELECT codigo FROM empresas WHERE codigo LIKE 'REV-%' ORDER BY id DESC LIMIT 1")
+    .prepare("SELECT MAX(CAST(substr(codigo,5) AS INTEGER)) AS n FROM empresas WHERE codigo LIKE 'REV-%'")
     .first<Row>();
-  let n = 0;
-  if (row && row.codigo) {
-    const m = String(row.codigo).match(/(\d+)/);
-    if (m) n = parseInt(m[1], 10);
-  }
-  return `REV-${String(n + 1).padStart(3, "0")}`;
+  const n = row && row.n != null ? Number(row.n) : 0;
+  return (Number.isFinite(n) ? n : 0) + 1;
 }
 
-async function inserirEmpresa(db: D1Database, e: Row): Promise<number> {
+async function proximoCodigo(db: D1Database): Promise<string> {
+  return `REV-${String(await proximoCodigoNum(db)).padStart(3, "0")}`;
+}
+
+// Monta (sem executar) o INSERT de uma empresa — usado solto ou em DB.batch().
+function stmtInserirEmpresa(db: D1Database, e: Row): D1PreparedStatement {
   const cols = [
     ...EMPRESA_CAMPOS.filter((c) => c in e),
     ...["cnpj_norm", "criado_em", "atualizado_em"].filter((c) => c in e),
@@ -187,8 +190,33 @@ async function inserirEmpresa(db: D1Database, e: Row): Promise<number> {
   const placeholders = cols.map(() => "?").join(",");
   const sql = `INSERT INTO empresas (${cols.join(",")}) VALUES (${placeholders})`;
   const vals = cols.map((c) => (e[c] === undefined ? null : e[c]));
-  const res = await db.prepare(sql).bind(...vals).run();
+  return db.prepare(sql).bind(...vals);
+}
+
+async function inserirEmpresa(db: D1Database, e: Row): Promise<number> {
+  const res = await stmtInserirEmpresa(db, e).run();
   return res.meta.last_row_id as number;
+}
+
+// Insere muitas empresas em lotes (DB.batch = 1 subrequest por lote), para nao
+// estourar o limite de subrequests do Worker em importacoes grandes. Se um lote
+// falhar, cai para insercao linha a linha para nao perder o lote inteiro.
+async function inserirEmpresasLote(db: D1Database, novos: Row[], erros: string[]): Promise<number> {
+  let ok = 0;
+  const TAM = 50;
+  for (let i = 0; i < novos.length; i += TAM) {
+    const lote = novos.slice(i, i + TAM);
+    try {
+      await db.batch(lote.map((e) => stmtInserirEmpresa(db, e)));
+      ok += lote.length;
+    } catch {
+      for (const e of lote) {
+        try { await stmtInserirEmpresa(db, e).run(); ok += 1; }
+        catch (ex: any) { erros.push(`${e.codigo || e.razao_social || "linha"}: ${ex?.message ?? ex}`); }
+      }
+    }
+  }
+  return ok;
 }
 
 async function atualizarEmpresa(db: D1Database, eid: number, e: Row): Promise<void> {
@@ -1626,50 +1654,63 @@ function linhaParaEmpresa(d: Row): Row {
 }
 
 app.post("/api/import", async (c) => {
-  const form = await c.req.formData();
-  const f = form.get("arquivo");
-  if (!f || typeof f === "string") {
-    return c.json({ erro: "Envie um arquivo .xlsx ou .csv no campo 'arquivo'." }, 400);
-  }
-  const file = f as File;
-  const nome = (file.name || "").toLowerCase();
-  const buf = await file.arrayBuffer();
+  // Leitura/parse do arquivo isolada: multipart torto ou arquivo invalido
+  // retorna erro claro em JSON em vez de um 500 cru (o parser de FormData do
+  // Worker estoura em partes sem `name`).
   let registros: Row[] = [];
-  if (nome.endsWith(".csv")) {
-    const texto = new TextDecoder("utf-8").decode(buf).replace(/^﻿/, "");
-    const wb = XLSX.read(texto, { type: "string", raw: true });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    registros = XLSX.utils.sheet_to_json<Row>(ws, { defval: "" });
-  } else {
-    const wb = XLSX.read(buf, { type: "array" });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    registros = XLSX.utils.sheet_to_json<Row>(ws, { defval: "" });
+  try {
+    const form = await c.req.formData();
+    const f = form.get("arquivo");
+    if (!f || typeof f === "string") {
+      return c.json({ erro: "Envie um arquivo .xlsx ou .csv no campo 'arquivo'." }, 400);
+    }
+    const file = f as File;
+    const nome = (file.name || "").toLowerCase();
+    const buf = await file.arrayBuffer();
+    if (nome.endsWith(".csv")) {
+      const texto = new TextDecoder("utf-8").decode(buf).replace(/^﻿/, "");
+      const wb = XLSX.read(texto, { type: "string", raw: true });
+      registros = XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+    } else {
+      const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+      registros = XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+    }
+  } catch (ex: any) {
+    return c.json(
+      { erro: "Não consegui ler o arquivo. Use o modelo (.xlsx) ou um .csv. Detalhe: " + (ex?.message ?? ex) },
+      400
+    );
   }
 
-  let criados = 0, atualizados = 0, ignorados = 0;
+  let atualizados = 0, ignorados = 0;
   const erros: string[] = [];
+  const novos: Row[] = [];
+  // Numero inicial do codigo calculado UMA vez; incrementa em memoria (evita
+  // 1 SELECT por linha e o antigo bug de gerar codigos repetidos).
+  let proxNum = await proximoCodigoNum(c.env.DB);
+
   let i = 1;
   for (const bruto of registros) {
     i += 1;
-    const data = linhaParaEmpresa(bruto);
-    const nomeEmp = limpar(data.razao_social) || limpar(data.nome_fantasia);
-    if (!nomeEmp) { ignorados += 1; continue; }
-    const e = montarEmpresa(data, true);
-    const dup = await empresaDupCnpj(c.env.DB, e.cnpj_norm);
     try {
+      const data = linhaParaEmpresa(bruto);
+      const nomeEmp = limpar(data.razao_social) || limpar(data.nome_fantasia);
+      if (!nomeEmp) { ignorados += 1; continue; }
+      const dup = await empresaDupCnpj(c.env.DB, soDigitos(data.cnpj));
       if (dup) {
-        const e2 = montarEmpresa(data, false);
-        await atualizarEmpresa(c.env.DB, dup, e2);
+        await atualizarEmpresa(c.env.DB, dup, montarEmpresa(data, false));
         atualizados += 1;
       } else {
-        if (!e.codigo) e.codigo = await proximoCodigo(c.env.DB);
-        await inserirEmpresa(c.env.DB, e);
-        criados += 1;
+        const e = montarEmpresa(data, true);
+        if (!e.codigo) e.codigo = `REV-${String(proxNum++).padStart(3, "0")}`;
+        novos.push(e);
       }
     } catch (ex: any) {
       erros.push(`Linha ${i}: ${ex?.message ?? ex}`);
     }
   }
+
+  const criados = await inserirEmpresasLote(c.env.DB, novos, erros);
   return c.json({ criados, atualizados, ignorados, erros });
 });
 
