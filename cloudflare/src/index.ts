@@ -352,10 +352,12 @@ function normUser(s: any): string { return String(s ?? "").trim().toLowerCase();
 function envAdmin(env: Env): Usuario {
   return { username: creds(env).user, admin: true, mustChange: false, env: true };
 }
-// Autentica username+senha no /login. Fluxo da equipe:
-//  - sem linha na tabela  => aceita a SENHA PADRAO (APP_DEFAULT_PASSWORD) e marca
-//    mustChange (a pessoa define a senha pessoal antes de usar o sistema);
-//  - com linha            => confere o hash pessoal (mustChange vem da coluna).
+// Autentica username+senha no /login. Acesso RESTRITO: so entra quem o admin
+// (bradel) cadastrou previamente. Fluxo da equipe:
+//  - linha pendente (must_change=1) => aceita a SENHA PADRAO (APP_DEFAULT_PASSWORD)
+//    e marca mustChange (a pessoa define a senha pessoal antes de usar o sistema);
+//  - linha com senha pessoal (must_change=0) => confere o hash pessoal;
+//  - sem linha => nega (nao existe auto-cadastro).
 async function autenticar(env: Env, username: string, senha: string): Promise<Usuario | null> {
   username = normUser(username);
   if (!username) return null;
@@ -364,24 +366,26 @@ async function autenticar(env: Env, username: string, senha: string): Promise<Us
   if (!RE_USERNAME.test(username)) return null;
   const r = await env.DB.prepare(
     "SELECT senha_hash,salt,must_change FROM usuarios WHERE username=?").bind(username).first<Row>();
+  // Acesso restrito: so entra quem o admin cadastrou (tem linha na tabela).
+  if (!r) return null;
   // Com senha pessoal definida (must_change=0): confere o hash.
-  if (r && !Number(r.must_change)) {
+  if (!Number(r.must_change)) {
     return (await conferirSenha(senha, String(r.senha_hash), String(r.salt)))
       ? { username, admin: false, mustChange: false } : null;
   }
-  // Sem linha (auto-cadastro) ou linha pendente de troca: aceita a senha padrao.
+  // Linha pendente de troca (1o acesso ou reset): aceita a senha padrao.
   const padrao = env.APP_DEFAULT_PASSWORD || "";
   if (padrao && senha === padrao) return { username, admin: false, mustChange: true };
   return null;
 }
-// Resolve o usuario de um cookie ja assinado (login confiavel). Sem linha => ainda
-// no primeiro acesso (precisa trocar a senha). Nunca retorna null aqui: a assinatura
-// do cookie ja prova que a pessoa passou pelo /login.
-async function carregarUsuario(env: Env, username: string): Promise<Usuario> {
+// Resolve o usuario de um cookie ja assinado (login confiavel). Retorna null se o
+// cadastro foi removido depois do login (o cookie deixa de valer).
+async function carregarUsuario(env: Env, username: string): Promise<Usuario | null> {
   if (username === creds(env).user) return envAdmin(env);
   const r = await env.DB.prepare(
     "SELECT must_change FROM usuarios WHERE username=?").bind(username).first<Row>();
-  return { username, admin: false, mustChange: r ? !!Number(r.must_change) : true };
+  if (!r) return null;
+  return { username, admin: false, mustChange: !!Number(r.must_change) };
 }
 
 function getCookie(c: any, name: string): string | null {

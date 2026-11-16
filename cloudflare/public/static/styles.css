@@ -470,6 +470,7 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
   font:inherit;font-size:13.5px;padding:9px 11px;border-radius:7px;cursor:pointer}
 .usermenu-pop button:hover,.usermenu-pop a:hover{background:var(--soft)}
 .usermenu-pop a{color:var(--vermelho);font-weight:600}
+.usermenu-pop[hidden]{display:none}
 
 /* ===== Modal genérico ===== */
 .modal-ov{position:fixed;inset:0;background:rgba(10,37,64,.5);display:grid;place-items:center;z-index:85;padding:16px}
