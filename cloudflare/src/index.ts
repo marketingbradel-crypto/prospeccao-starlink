@@ -984,11 +984,13 @@ function redeDoLink(url: string): string {
   return "";
 }
 
-// URLs sociais genericas (nao sao perfil de uma empresa) — descartadas.
+// URLs sociais que NAO sao a pagina/perfil de uma empresa (posts, fotos, videos,
+// paginas de sistema) — descartadas para manter so perfis prospectaveis.
 function linkSocialGenerico(url: string): boolean {
   const u = (url || "").toLowerCase();
-  return /instagram\.com\/(explore|p\/|reel|reels|tags|accounts|about|directory)/.test(u)
-      || /facebook\.com\/(pages\/category|events|groups|watch|marketplace|help|login|sharer|policies|business)/.test(u);
+  return /instagram\.com\/(explore|p\/|reel|reels|stories|tv\/|tags|accounts|about|directory)/.test(u)
+      || /facebook\.com\/(pages\/category|events|groups|watch|marketplace|help|login|sharer|policies|business|photo|photos|media|reel|story|stories|permalink|story\.php|sharer\.php)/.test(u)
+      || /\/(posts|videos|photos)\//.test(u); // .../<pagina>/posts/... etc.
 }
 
 // Extrai o @handle do perfil social a partir do link, quando houver.
@@ -1029,7 +1031,9 @@ async function buscarSocial(env: Env, termo: string, cidade: string, mr: string,
   const ufNome = uf ? (geo.estado(uf)?.nome ?? uf) : "";
   const local = [cidade, mr, ufNome].filter(Boolean).join(" ");
   const base = termo || "Starlink revenda loja internet via satélite";
-  const q = `${base} ${local} (site:instagram.com OR site:facebook.com)`.trim();
+  // Sem operadores (site:/OR) — contas Serper free os rejeitam. Usamos palavras
+  // simples e filtramos os links de instagram/facebook nos resultados organicos.
+  const q = `${base} ${local} instagram facebook`.trim();
   const organicos = await serperWebBuscar(env.SERPER_API_KEY, q);
   const out: Row[] = [];
   const vistos = new Set<string>();
@@ -1040,7 +1044,9 @@ async function buscarSocial(env: Env, termo: string, cidade: string, mr: string,
     if (linkSocialGenerico(link)) continue;
     const nome = limpaTituloSocial(o.title || "");
     if (!nome) continue;
-    const chave = link.split("?")[0].toLowerCase();
+    // Dedup por nome+rede: no maximo um Instagram e um Facebook por negocio
+    // (o mesmo perfil costuma aparecer em varios links/paginas).
+    const chave = L.norm(nome) + "|" + rede;
     if (vistos.has(chave)) continue;
     vistos.add(chave);
     out.push({
