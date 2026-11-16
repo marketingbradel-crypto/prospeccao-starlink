@@ -62,18 +62,28 @@ export const INTERESSE = ["Sim", "Talvez", "A avaliar", "Não"];
 // Classifica o tamanho do parceiro/prospect independente de ja ter vendido.
 export const FAIXAS_POTENCIAL = [
   "10+ vendas/mês",
+  "20+ vendas/mês",
   "30+ vendas/mês",
+  "40+ vendas/mês",
   "50+ vendas/mês",
+  "60+ vendas/mês",
+  "70+ vendas/mês",
   "80+ vendas/mês",
+  "90+ vendas/mês",
   "100+ vendas/mês",
 ];
 
 // Cor por faixa (escala quente, do menor para o maior potencial) — usada nos chips e no painel.
 export const FAIXA_HEX: Record<string, string> = {
-  "10+ vendas/mês": "#8fb4e0",
-  "30+ vendas/mês": "#5b8fd0",
-  "50+ vendas/mês": "#e8b800",
+  "10+ vendas/mês": "#a9c7e8",
+  "20+ vendas/mês": "#8fb4e0",
+  "30+ vendas/mês": "#6f9ad8",
+  "40+ vendas/mês": "#5b8fd0",
+  "50+ vendas/mês": "#e8c84a",
+  "60+ vendas/mês": "#e8b800",
+  "70+ vendas/mês": "#e89a1f",
   "80+ vendas/mês": "#e8811f",
+  "90+ vendas/mês": "#db5a24",
   "100+ vendas/mês": "#cc3a26",
 };
 
@@ -140,12 +150,11 @@ export function parseCapacidade(txt: any): number | null {
   return m ? parseInt(m[1], 10) : null;
 }
 
+// Faixa pela quantidade de vendas, de 10 em 10: 10-19 -> "10+", 20-29 -> "20+", ... teto 100+.
+// Abaixo de 10 usa "10+" como piso (apenas para sugestao; vendas < 10 nao recebem faixa nos dados).
 function faixaPorNumero(n: number): string {
-  if (n >= 100) return "100+ vendas/mês";
-  if (n >= 80) return "80+ vendas/mês";
-  if (n >= 50) return "50+ vendas/mês";
-  if (n >= 30) return "30+ vendas/mês";
-  return "10+ vendas/mês";
+  const dezena = Math.min(100, Math.max(10, Math.floor(n / 10) * 10));
+  return `${dezena}+ vendas/mês`;
 }
 
 export function sugerirFaixa(

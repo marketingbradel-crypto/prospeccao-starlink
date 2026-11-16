@@ -706,8 +706,19 @@ app.get("/api/dashboard", async (c) => {
   const taxa = total ? Math.round((1000.0 * credenciados) / total) / 10 : 0.0;
   const porSegmentoOrd = Object.fromEntries(Object.entries(porSegmento).sort((a, b) => b[1] - a[1]));
 
+  // Volume mensal de novos informado a mao (meta.volume_mensal = {"YYYY-MM": n}).
+  // As datas de lead no banco estao achatadas no mes do import, entao nao refletem
+  // a entrada real; quando esse volume existir, ele e a fonte da linha de leads.
+  let volumeManual: Record<string, number> | null = null;
+  try {
+    const raw = await metaGet(c.env.DB, "volume_mensal");
+    const obj = raw ? JSON.parse(raw) : null;
+    if (obj && typeof obj === "object" && Object.keys(obj).length) volumeManual = obj;
+  } catch { volumeManual = null; }
+  const leadsFonte = volumeManual ?? leadsPorMes;
+
   // Monta a serie mensal contigua (sem buracos) e mantem so os ultimos 12 meses.
-  const mesesSet = new Set<string>([...Object.keys(leadsPorMes), ...Object.keys(credPorMes)]);
+  const mesesSet = new Set<string>([...Object.keys(leadsFonte), ...Object.keys(credPorMes)]);
   let serieMensal: { mes: string; leads: number; creds: number }[] = [];
   if (mesesSet.size) {
     const ordenados = [...mesesSet].sort();
@@ -716,7 +727,7 @@ app.get("/api/dashboard", async (c) => {
     const limite = ultimo > mesAtual ? ultimo : mesAtual;
     let cur = ordenados[0];
     while (cur <= limite && serieMensal.length < 240) {
-      serieMensal.push({ mes: cur, leads: leadsPorMes[cur] ?? 0, creds: credPorMes[cur] ?? 0 });
+      serieMensal.push({ mes: cur, leads: Number(leadsFonte[cur]) || 0, creds: credPorMes[cur] ?? 0 });
       cur = proxMes(cur);
     }
     serieMensal = serieMensal.slice(-12);
