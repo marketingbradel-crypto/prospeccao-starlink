@@ -646,11 +646,12 @@ const App = (() => {
   function chartCobertura(cob) {
     if (!cob || !cob.length) return '<div class="empty">Sem universo VSM configurado.</div>';
     const corPct = p => p >= 80 ? hexCor("verde") : p >= 40 ? hexCor("amarelo") : hexCor("laranja");
-    return `<div class="chart">` + cob.map(c => {
+    const fmtPct = p => String(p).replace(".", ",");
+    return `<div class="chart cobertura">` + cob.map(c => {
       const nome = (B.uf_nomes && B.uf_nomes[c.uf]) || c.uf;
       return `<div class="row"><span class="lbl" title="${esc(nome)}">${esc(c.uf)}</span>
         <span class="track"><span class="fill" style="width:${Math.min(100, c.pct)}%;background:${corPct(c.pct)}"></span></span>
-        <span class="val" title="${c.mapeadas} de ${c.universo} revendas do VSM mapeadas">${c.mapeadas}/${c.universo} · ${c.pct}%</span></div>`;
+        <span class="val" title="${c.mapeadas} de ${c.universo} revendas do VSM mapeadas"><span class="num">${c.mapeadas} / ${c.universo}</span><span class="sep">|</span><span class="pct" style="color:${corPct(c.pct)}">${fmtPct(c.pct)}%</span></span></div>`;
     }).join("") + `</div>`;
   }
 
