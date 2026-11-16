@@ -10,8 +10,9 @@ import * as L from "./listas";
 interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
-  APP_USER?: string;   // usuario do login (padrao "bradel")
-  APP_PASSWORD?: string; // senha — definida como secret (wrangler secret put APP_PASSWORD)
+  APP_USER?: string;   // usuario admin do login (padrao "bradel")
+  APP_PASSWORD?: string; // senha do admin (bradel) — secret (wrangler secret put APP_PASSWORD)
+  APP_DEFAULT_PASSWORD?: string; // senha padrao do 1o acesso dos demais logins (secret opcional)
   PLACES_API_KEY?: string; // chave do Google Places API (wrangler secret put PLACES_API_KEY)
   SERPER_API_KEY?: string;  // chave do Serper.dev (wrangler secret put SERPER_API_KEY) — tem precedencia
 }
@@ -288,13 +289,99 @@ function creds(env: Env) {
   return { user: env.APP_USER || "bradel", pass: env.APP_PASSWORD || "" };
 }
 
-async function tokenFor(env: Env): Promise<string> {
-  const { user, pass } = creds(env);
+// Pessoa autenticada. `env` = superadmin do secret (bradel). `admin` so o env tem.
+// `mustChange` = entrou pela senha padrao e ainda precisa definir a senha pessoal.
+type Usuario = { username: string; admin: boolean; mustChange: boolean; env?: boolean };
+
+// ---- hashing de senha (PBKDF2-SHA256, so WebCrypto) ----
+function hexDe(buf: ArrayBuffer | Uint8Array): string {
+  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+function bytesDe(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return out;
+}
+const PBKDF2_ITER = 100000;
+async function hashSenha(senha: string, saltHex?: string): Promise<{ hash: string; salt: string }> {
+  const salt = saltHex ? bytesDe(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey("raw", te.encode(senha), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations: PBKDF2_ITER, hash: "SHA-256" }, key, 256);
+  return { hash: hexDe(bits), salt: hexDe(salt) };
+}
+// Comparacao de tempo ~constante (evita timing attack na conferencia de hash/assinatura).
+function igualConstante(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+async function conferirSenha(senha: string, hashHex: string, saltHex: string): Promise<boolean> {
+  const { hash } = await hashSenha(senha, saltHex);
+  return igualConstante(hash, hashHex);
+}
+
+// ---- sessao assinada: o cookie carrega o login + HMAC(APP_PASSWORD) ----
+async function assinar(env: Env, login: string): Promise<string> {
   const key = await crypto.subtle.importKey(
-    "raw", te.encode(pass), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
-  );
-  const sig = await crypto.subtle.sign("HMAC", key, te.encode("psl-auth-v1|" + user));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+    "raw", te.encode(env.APP_PASSWORD || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, te.encode("psl-sess-v1|" + login));
+  return hexDe(sig);
+}
+async function sessaoToken(env: Env, login: string): Promise<string> {
+  return encodeURIComponent(login) + "." + (await assinar(env, login));
+}
+async function loginDoCookie(env: Env, raw: string | null): Promise<string | null> {
+  if (!raw) return null;
+  const i = raw.lastIndexOf(".");
+  if (i <= 0) return null;
+  let login: string;
+  try { login = decodeURIComponent(raw.slice(0, i)); } catch { return null; }
+  const esperado = await assinar(env, login);
+  return igualConstante(raw.slice(i + 1), esperado) ? login : null;
+}
+
+// username valido: minusculo, sem acento/espaco. Ex.: "leandro", "luiscarlos".
+const RE_USERNAME = /^[a-z0-9._-]{3,30}$/;
+function normUser(s: any): string { return String(s ?? "").trim().toLowerCase(); }
+
+// O login do env (APP_USER/APP_PASSWORD) e o superadmin permanente: nunca fica sem
+// acesso e e o unico "admin" (gerencia os demais). Nao vive na tabela usuarios.
+function envAdmin(env: Env): Usuario {
+  return { username: creds(env).user, admin: true, mustChange: false, env: true };
+}
+// Autentica username+senha no /login. Fluxo da equipe:
+//  - sem linha na tabela  => aceita a SENHA PADRAO (APP_DEFAULT_PASSWORD) e marca
+//    mustChange (a pessoa define a senha pessoal antes de usar o sistema);
+//  - com linha            => confere o hash pessoal (mustChange vem da coluna).
+async function autenticar(env: Env, username: string, senha: string): Promise<Usuario | null> {
+  username = normUser(username);
+  if (!username) return null;
+  const { user, pass } = creds(env);
+  if (username === user) return pass && senha === pass ? envAdmin(env) : null;
+  if (!RE_USERNAME.test(username)) return null;
+  const r = await env.DB.prepare(
+    "SELECT senha_hash,salt,must_change FROM usuarios WHERE username=?").bind(username).first<Row>();
+  // Com senha pessoal definida (must_change=0): confere o hash.
+  if (r && !Number(r.must_change)) {
+    return (await conferirSenha(senha, String(r.senha_hash), String(r.salt)))
+      ? { username, admin: false, mustChange: false } : null;
+  }
+  // Sem linha (auto-cadastro) ou linha pendente de troca: aceita a senha padrao.
+  const padrao = env.APP_DEFAULT_PASSWORD || "";
+  if (padrao && senha === padrao) return { username, admin: false, mustChange: true };
+  return null;
+}
+// Resolve o usuario de um cookie ja assinado (login confiavel). Sem linha => ainda
+// no primeiro acesso (precisa trocar a senha). Nunca retorna null aqui: a assinatura
+// do cookie ja prova que a pessoa passou pelo /login.
+async function carregarUsuario(env: Env, username: string): Promise<Usuario> {
+  if (username === creds(env).user) return envAdmin(env);
+  const r = await env.DB.prepare(
+    "SELECT must_change FROM usuarios WHERE username=?").bind(username).first<Row>();
+  return { username, admin: false, mustChange: r ? !!Number(r.must_change) : true };
 }
 
 function getCookie(c: any, name: string): string | null {
@@ -306,18 +393,18 @@ function getCookie(c: any, name: string): string | null {
   return null;
 }
 
-function checkBasic(c: any): boolean {
+// Basic Auth p/ a API (scripts/integracoes): user:senha pela mesma autenticacao.
+async function usuarioBasic(c: any): Promise<Usuario | null> {
   const h = c.req.header("Authorization") || "";
-  if (!h.startsWith("Basic ")) return false;
+  if (!h.startsWith("Basic ")) return null;
   let dec = "";
-  try { dec = atob(h.slice(6)); } catch { return false; }
+  try { dec = atob(h.slice(6)); } catch { return null; }
   const i = dec.indexOf(":");
-  if (i < 0) return false;
-  const { user, pass } = creds(c.env);
-  return !!pass && dec.slice(0, i) === user && dec.slice(i + 1) === pass;
+  if (i < 0) return null;
+  return await autenticar(c.env, dec.slice(0, i), dec.slice(i + 1));
 }
 
-function loginPage(erro = "", user = "bradel"): string {
+function loginPage(erro = "", user = ""): string {
   const msg = erro ? `<div class="err">${erro}</div>` : "";
   return `<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -352,7 +439,7 @@ input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,2
   <p class="sub">Bradel · acesso restrito</p>
   ${msg}
   <label for="u">Usuário</label>
-  <input id="u" name="user" value="${user}" autocomplete="username" autocapitalize="none" spellcheck="false">
+  <input id="u" name="user" value="${user}" placeholder="seu usuário" autocomplete="username" autocapitalize="none" autofocus spellcheck="false">
   <label for="pw">Senha</label>
   <div class="pw">
     <input id="pw" name="pass" type="password" autocomplete="current-password" required>
@@ -377,9 +464,10 @@ function tg(){
 </body></html>`;
 }
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: { usuario: Usuario } }>();
 
-// Middleware de login: tela propria + cookie assinado; API tambem aceita Basic.
+// Middleware de login: tela propria + cookie assinado (carrega o username);
+// a API tambem aceita Basic. O usuario autenticado fica em c.get("usuario").
 app.use("*", async (c, next) => {
   const env = c.env;
   if (!env.APP_PASSWORD) return c.text("Login não configurado (defina o secret APP_PASSWORD).", 503);
@@ -388,15 +476,13 @@ app.use("*", async (c, next) => {
   if (path === "/login") {
     if (c.req.method === "POST") {
       const body = await c.req.parseBody();
-      const u = String(body.user ?? "").trim();
-      const p = String(body.pass ?? "");
-      const { user, pass } = creds(env);
-      if (u === user && p === pass) {
+      const u = await autenticar(env, String(body.user ?? ""), String(body.pass ?? ""));
+      if (u) {
         c.header("Set-Cookie",
-          `${COOKIE}=${await tokenFor(env)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`);
+          `${COOKIE}=${await sessaoToken(env, u.username)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`);
         return c.redirect("/", 302);
       }
-      return c.html(loginPage("Usuário ou senha incorretos.", u || "bradel"), 401);
+      return c.html(loginPage("Usuário ou senha incorretos.", String(body.user ?? "").trim()), 401);
     }
     return c.html(loginPage());
   }
@@ -405,9 +491,13 @@ app.use("*", async (c, next) => {
     return c.redirect("/login", 302);
   }
 
-  const cookie = getCookie(c, COOKIE);
-  const ok = (cookie !== null && cookie === (await tokenFor(env))) || checkBasic(c);
-  if (ok) return next();
+  // Assets estaticos: basta o cookie estar assinado (sem toque no banco).
+  const ehAsset = path.startsWith("/static/") || path === "/favicon.ico";
+  const login = await loginDoCookie(env, getCookie(c, COOKIE));
+  let usuario: Usuario | null = null;
+  if (login) usuario = ehAsset ? { username: login, admin: false, mustChange: false } : await carregarUsuario(env, login);
+  if (!usuario) usuario = await usuarioBasic(c);
+  if (usuario) { c.set("usuario", usuario); return next(); }
   if (path.startsWith("/api/")) return c.json({ erro: "Não autenticado." }, 401);
   return c.redirect("/login", 302);
 });
@@ -550,13 +640,15 @@ app.post("/api/empresas/:eid{[0-9]+}/contatos", async (c) => {
   const eid = Number(c.req.param("eid"));
   const data = await jsonBody(c);
   const dataContato = limpar(data.data) || hoje();
+  const quem = c.get("usuario").username;          // carimbo de quem registrou (auto)
+  const responsavel = limpar(data.responsavel) || quem; // por padrao, a pessoa logada
   await c.env.DB
     .prepare(
-      "INSERT INTO contatos (empresa_id,data,tipo,responsavel,resumo,proxima_acao,proxima_acao_data,criado_em) VALUES (?,?,?,?,?,?,?,?)"
+      "INSERT INTO contatos (empresa_id,data,tipo,responsavel,resumo,proxima_acao,proxima_acao_data,criado_em,criado_por) VALUES (?,?,?,?,?,?,?,?,?)"
     )
-    .bind(eid, dataContato, limpar(data.tipo) ?? null, limpar(data.responsavel) ?? null,
+    .bind(eid, dataContato, limpar(data.tipo) ?? null, responsavel,
       limpar(data.resumo) ?? null, limpar(data.proxima_acao) ?? null,
-      limpar(data.proxima_acao_data) ?? null, agora()).run();
+      limpar(data.proxima_acao_data) ?? null, agora(), quem).run();
   await c.env.DB
     .prepare("UPDATE empresas SET data_ultimo_contato=?, proxima_acao=?, proxima_acao_data=?, atualizado_em=? WHERE id=?")
     .bind(dataContato, limpar(data.proxima_acao) ?? null, limpar(data.proxima_acao_data) ?? null, agora(), eid).run();
@@ -565,6 +657,96 @@ app.post("/api/empresas/:eid{[0-9]+}/contatos", async (c) => {
 
 app.delete("/api/contatos/:cid{[0-9]+}", async (c) => {
   await c.env.DB.prepare("DELETE FROM contatos WHERE id=?").bind(Number(c.req.param("cid"))).run();
+  return c.json({ ok: true });
+});
+
+// ---- sessao / usuarios ----
+// Quem sou eu (o front usa p/ chip, menu admin e para forcar a 1a troca de senha).
+app.get("/api/me", (c) => {
+  const u = c.get("usuario");
+  return c.json({ username: u.username, admin: u.admin, env: !!u.env, must_change: u.mustChange });
+});
+
+// Define/troca a senha pessoal. No 1o acesso (mustChange) nao pede a senha atual;
+// depois disso, exige. O superadmin (bradel) troca a senha pela Cloudflare, nao aqui.
+app.post("/api/me/senha", async (c) => {
+  const u = c.get("usuario");
+  if (u.env) return c.json({ erro: "O administrador do sistema troca a senha pela Cloudflare (secret APP_PASSWORD)." }, 400);
+  const d = await jsonBody(c);
+  const nova = String(d.nova ?? "");
+  const padrao = c.env.APP_DEFAULT_PASSWORD || "";
+  if (nova.length < 6) return c.json({ erro: "A nova senha precisa ter ao menos 6 caracteres." }, 400);
+  if (padrao && nova === padrao) return c.json({ erro: "Escolha uma senha diferente da senha padrão." }, 400);
+
+  const r = await c.env.DB.prepare(
+    "SELECT senha_hash,salt FROM usuarios WHERE username=?").bind(u.username).first<Row>();
+  if (r) {
+    // Ja tem senha pessoal: confere a atual (a menos que o admin tenha forcado troca).
+    if (!u.mustChange) {
+      const ok = await conferirSenha(String(d.atual ?? ""), String(r.senha_hash), String(r.salt));
+      if (!ok) return c.json({ erro: "Senha atual incorreta." }, 400);
+    }
+    const { hash, salt } = await hashSenha(nova);
+    await c.env.DB.prepare(
+      "UPDATE usuarios SET senha_hash=?, salt=?, must_change=0, atualizado_em=? WHERE username=?")
+      .bind(hash, salt, agora(), u.username).run();
+  } else {
+    // 1o acesso: cria a linha com a senha pessoal.
+    const { hash, salt } = await hashSenha(nova);
+    await c.env.DB.prepare(
+      "INSERT INTO usuarios (username,senha_hash,salt,must_change,criado_em) VALUES (?,?,?,0,?)")
+      .bind(u.username, hash, salt, agora()).run();
+  }
+  return c.json({ ok: true });
+});
+
+// --- gestao de usuarios (somente o superadmin/bradel) ---
+function soAdmin(c: any) { return c.get("usuario")?.admin === true; }
+
+app.get("/api/usuarios", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const { results } = await c.env.DB.prepare(
+    "SELECT username,must_change,criado_em,atualizado_em FROM usuarios ORDER BY username COLLATE NOCASE").all<Row>();
+  return c.json(results ?? []);
+});
+
+// "Adicionar" alguem = liberar o 1o acesso: cria a linha ja em mustChange, de modo
+// que a pessoa entra com a senha padrao e define a dela. Sem senha aqui.
+app.post("/api/usuarios", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const d = await jsonBody(c);
+  const username = normUser(d.username);
+  if (!RE_USERNAME.test(username)) return c.json({ erro: "Usuário inválido (3-30: letras minúsculas, números, . _ -)." }, 400);
+  if (username === creds(c.env).user) return c.json({ erro: "Esse usuário é reservado ao administrador do sistema." }, 400);
+  const existe = await c.env.DB.prepare("SELECT username FROM usuarios WHERE username=?").bind(username).first();
+  if (existe) return c.json({ erro: "Esse usuário já existe." }, 400);
+  if (!(c.env.APP_DEFAULT_PASSWORD || "")) return c.json({ erro: "Defina o secret APP_DEFAULT_PASSWORD para liberar o 1º acesso." }, 400);
+  // Placeholder de hash (nunca confere): a pessoa entra pela senha padrao (sem linha-util
+  // ate ela trocar). Guardamos must_change=1 so para listar quem esta pendente.
+  const { hash, salt } = await hashSenha(crypto.randomUUID());
+  await c.env.DB.prepare(
+    "INSERT INTO usuarios (username,senha_hash,salt,must_change,criado_em) VALUES (?,?,?,1,?)")
+    .bind(username, hash, salt, agora()).run();
+  return c.json({ ok: true, senha_padrao: true }, 201);
+});
+
+// Resetar senha = forcar nova troca. Mantem a linha mas marca must_change=1 e troca o
+// hash por um aleatorio, para a pessoa voltar a entrar pela senha padrao.
+app.post("/api/usuarios/:username/reset", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const username = normUser(c.req.param("username"));
+  const r = await c.env.DB.prepare("SELECT username FROM usuarios WHERE username=?").bind(username).first();
+  if (!r) return c.json({ erro: "Usuário não encontrado." }, 404);
+  const { hash, salt } = await hashSenha(crypto.randomUUID());
+  await c.env.DB.prepare(
+    "UPDATE usuarios SET senha_hash=?, salt=?, must_change=1, atualizado_em=? WHERE username=?")
+    .bind(hash, salt, agora(), username).run();
+  return c.json({ ok: true });
+});
+
+app.delete("/api/usuarios/:username", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  await c.env.DB.prepare("DELETE FROM usuarios WHERE username=?").bind(normUser(c.req.param("username"))).run();
   return c.json({ ok: true });
 });
 

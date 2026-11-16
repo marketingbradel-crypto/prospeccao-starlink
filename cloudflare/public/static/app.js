@@ -19,6 +19,9 @@ const App = (() => {
   let PEND = [];           // pendentes da varredura automática (aguardando revisão)
   let FU = null;           // dados do follow-up carregados (/api/follow-up)
   let fuUF = "";           // filtro de estado aplicado no follow-up ("" = todos)
+  let ME = null;           // usuário logado (/api/me): { username, admin, must_change }
+  let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
+  let apMetric = "empresas"; // métrica ativa no painel de indicadores ao lado do mapa
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -198,8 +201,133 @@ const App = (() => {
     await carregarMunicipios();
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
+    // Fecha o menu do usuário ao clicar fora; ESC / clique no fundo fecham o modal.
+    document.addEventListener("click", (ev) => {
+      const um = $("usermenu"); if (um && !um.contains(ev.target)) fecharUserMenu();
+    });
+    $("modal-ov").addEventListener("click", (ev) => { if (ev.target === $("modal-ov")) fecharModal(); });
+    document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") fecharModal(); });
     // Badge de pendências de follow-up (vencidas + hoje) na aba, sem abrir a aba.
     fetch("/api/follow-up").then(r => r.json()).then(atualizarBadgeFollowUp).catch(() => {});
+    await carregarMe();  // chip do usuário + força definição de senha no 1º acesso
+  }
+
+  // ==================== Usuário / sessão ====================
+  async function carregarMe() {
+    try { ME = await (await fetch("/api/me")).json(); } catch (e) { ME = null; }
+    if (!ME || ME.erro) { ME = null; return; }
+    const nome = ME.username || "";
+    $("uname").textContent = nome + (ME.admin ? " · admin" : "");
+    $("uava").textContent = (nome[0] || "?");
+    $("menu-usuarios").hidden = !ME.admin;
+    if (ME.must_change) forcarPrimeiroAcesso();
+  }
+  function toggleUserMenu(ev) {
+    if (ev) ev.stopPropagation();
+    const pop = $("usermenu-pop"); const abrir = pop.hidden;
+    pop.hidden = !abrir;
+    $("userchip").setAttribute("aria-expanded", abrir ? "true" : "false");
+  }
+  function fecharUserMenu() {
+    const p = $("usermenu-pop");
+    if (p && !p.hidden) { p.hidden = true; $("userchip").setAttribute("aria-expanded", "false"); }
+  }
+
+  // ---- modal genérico ----
+  function abrirModal(titulo, html, opts) {
+    opts = opts || {};
+    MODAL_FECHAVEL = opts.fechavel !== false;
+    $("modal-tt").textContent = titulo;
+    $("modal-b").innerHTML = html;
+    $("modal-x").style.display = MODAL_FECHAVEL ? "" : "none";
+    $("modal-ov").hidden = false;
+    const f = $("modal-b").querySelector("input"); if (f) setTimeout(() => f.focus(), 40);
+  }
+  function fecharModal() { if (MODAL_FECHAVEL) $("modal-ov").hidden = true; }
+  function modalErro(msg) {
+    let e = $("modal-err");
+    if (!e) { e = document.createElement("div"); e.id = "modal-err"; e.className = "modal-err"; $("modal-b").prepend(e); }
+    e.textContent = msg;
+  }
+
+  // ---- trocar senha (voluntário) e 1º acesso (forçado) ----
+  function abrirTrocarSenha() {
+    fecharUserMenu();
+    if (ME && ME.env) { toast("O admin do sistema troca a senha pela Cloudflare."); return; }
+    abrirModal("Trocar minha senha", `
+      <div class="fld"><label>Senha atual</label><input id="s-atual" type="password" autocomplete="current-password"></div>
+      <div class="fld"><label>Nova senha (mín. 6)</label><input id="s-nova" type="password" autocomplete="new-password"></div>
+      <div class="fld"><label>Confirmar nova senha</label><input id="s-nova2" type="password" autocomplete="new-password"></div>
+      <button class="btn primary" style="width:100%" onclick="App.salvarSenha(false)">Salvar nova senha</button>`);
+  }
+  function forcarPrimeiroAcesso() {
+    abrirModal("Defina sua senha", `
+      <div class="modal-note">Primeiro acesso de <b>${esc(ME.username)}</b>. Crie uma senha pessoal para continuar — a partir de agora é com ela que você entra.</div>
+      <div class="fld"><label>Nova senha (mín. 6)</label><input id="s-nova" type="password" autocomplete="new-password"></div>
+      <div class="fld"><label>Confirmar nova senha</label><input id="s-nova2" type="password" autocomplete="new-password"></div>
+      <button class="btn primary" style="width:100%" onclick="App.salvarSenha(true)">Salvar e entrar</button>`, { fechavel: false });
+  }
+  async function salvarSenha(primeiro) {
+    const nova = $("s-nova").value, nova2 = $("s-nova2").value;
+    const atual = (!primeiro && $("s-atual")) ? $("s-atual").value : "";
+    if (nova.length < 6) { modalErro("A senha precisa ter ao menos 6 caracteres."); return; }
+    if (nova !== nova2) { modalErro("As senhas não conferem."); return; }
+    const r = await fetch("/api/me/senha", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ atual, nova }),
+    });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok) { modalErro(js.erro || "Não foi possível trocar a senha."); return; }
+    MODAL_FECHAVEL = true; $("modal-ov").hidden = true;
+    if (ME) ME.must_change = false;
+    toast("Senha atualizada.");
+  }
+
+  // ---- painel admin de usuários ----
+  async function abrirUsuarios() {
+    fecharUserMenu();
+    abrirModal("Usuários da equipe", `<div class="modal-note">Carregando…</div>`);
+    await recarregarUsuarios();
+  }
+  async function recarregarUsuarios() {
+    let lista = [];
+    try { const r = await fetch("/api/usuarios"); lista = r.ok ? await r.json() : []; } catch (e) {}
+    const itens = lista.map(u => `
+      <li>
+        <span class="uava" style="width:26px;height:26px">${esc((u.username || "?")[0])}</span>
+        <span class="un">${esc(u.username)} ${u.must_change ? '<span class="pend">senha padrão</span>' : '<span class="okb">senha própria</span>'}</span>
+        <button class="lnk" onclick="App.resetUsuario('${esc(u.username)}')" data-tip="Volta para a senha padrão: a pessoa redefine no próximo acesso.">resetar</button>
+        <button class="lnk danger" onclick="App.delUsuario('${esc(u.username)}')">remover</button>
+      </li>`).join("");
+    $("modal-b").innerHTML = `
+      <div class="modal-note">Para liberar alguém, informe o usuário (ex.: <b>leandro</b>). A pessoa entra com esse usuário + a <b>senha padrão</b> e define a própria senha no 1º acesso.</div>
+      <div class="fld" style="display:flex;gap:8px;margin-bottom:14px">
+        <input id="nu-user" placeholder="novo usuário (minúsculo)" autocapitalize="none" spellcheck="false" style="flex:1">
+        <button class="btn primary" onclick="App.addUsuario()">Adicionar</button>
+      </div>
+      <ul class="userlist">${itens || '<li class="okb">Ninguém definiu senha ainda. Quem entrar pela 1ª vez (ou for liberado aqui) aparece nesta lista.</li>'}</ul>`;
+  }
+  async function addUsuario() {
+    const username = ($("nu-user").value || "").trim().toLowerCase();
+    if (!username) { toast("Informe o usuário."); return; }
+    const r = await fetch("/api/usuarios", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+    });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(js.erro || "Não foi possível adicionar."); return; }
+    toast("Usuário liberado: " + username);
+    await recarregarUsuarios();
+  }
+  async function resetUsuario(username) {
+    if (!confirm("Resetar a senha de " + username + "? A pessoa volta a entrar com a senha padrão.")) return;
+    const r = await fetch("/api/usuarios/" + encodeURIComponent(username) + "/reset", { method: "POST" });
+    if (!r.ok) { toast("Falha ao resetar."); return; }
+    toast("Senha resetada."); await recarregarUsuarios();
+  }
+  async function delUsuario(username) {
+    if (!confirm("Remover o usuário " + username + "?")) return;
+    const r = await fetch("/api/usuarios/" + encodeURIComponent(username), { method: "DELETE" });
+    if (!r.ok) { toast("Falha ao remover."); return; }
+    toast("Usuário removido."); await recarregarUsuarios();
   }
 
   // Carrega os municípios das UFs de atuação (p/ reconhecer a 1ª cidade em campos
@@ -269,7 +397,7 @@ const App = (() => {
     if (uf && !GEOUF[uf]) tasks.push(fetch("/api/geo/" + encodeURIComponent(uf)).then(r => r.json()).then(g => { GEOUF[uf] = g; }));
     const [emp, mp, dsh] = await Promise.all(tasks);
     EMPRESAS = emp; MAP = mp; DASH = dsh;
-    renderKPIs(); renderMapa(); renderLista();
+    renderKPIs(); renderMapa(); renderLista(); renderApuracao();
     if (!$("view-painel").classList.contains("hidden")) renderPainel();
   }
 
@@ -631,6 +759,138 @@ const App = (() => {
   function realce(id, on) {
     const c = $("mapa").querySelector(`circle.mk[data-id="${id}"]`);
     if (c) c.classList.toggle("hot", !!on);
+  }
+
+  // ==================== PAINEL DE INDICADORES (apuração ao lado do mapa) ====================
+  // Painel em tempo real inspirado na apuração eleitoral: um indicador geral de
+  // destaque + cartões por estado, calculados a partir da base JÁ filtrada
+  // (EMPRESAS) — então respeita e sincroniza com os filtros do mapa.
+  const AP_METRICS = [
+    { key: "empresas",    label: "Empresas",    tit: "TOTAL DE EMPRESAS PROSPECTADAS", cor: "azul" },
+    { key: "contatadas",  label: "Contatadas",  tit: "EMPRESAS CONTATADAS",            cor: "amarelo" },
+    { key: "qualificadas",label: "Qualificadas",tit: "OPORTUNIDADES QUALIFICADAS",     cor: "laranja" },
+    { key: "vendas",      label: "Vendas",      tit: "VENDAS REALIZADAS",              cor: "verde" },
+  ];
+
+  // Vale 1 (ou 0) para uma empresa conforme a métrica selecionada.
+  // contatadas = saiu de "Prospectado"; qualificadas = em negociação/doc/credenciado
+  // (cores amarelo/laranja/verde); vendas = já fez venda.
+  function apVale(e, metric) {
+    const st = String(e.status || "").trim();
+    const cor = corStatus(st);
+    switch (metric) {
+      case "contatadas":   return st && st !== "Prospectado" ? 1 : 0;
+      case "qualificadas": return (cor === "amarelo" || cor === "laranja" || cor === "verde") ? 1 : 0;
+      case "vendas":       return e.ja_vendeu ? 1 : 0;
+      default:             return 1; // empresas
+    }
+  }
+
+  const apPct = (p) => String(Math.round(p * 10) / 10).replace(".", ",");
+
+  function renderApuracao() {
+    const box = $("apuracao");
+    if (!box || !B) return;
+    const metric = AP_METRICS.find(m => m.key === apMetric) || AP_METRICS[0];
+    const ufs = B.ufs || [];
+    const ufSel = $("f-uf") ? $("f-uf").value : "";
+    const corHex = hexCor(metric.cor);
+
+    // Universo VSM por estado (meta) — vem do dashboard (constante, não filtrado).
+    const universo = {};
+    (DASH && DASH.cobertura_vsm || []).forEach(c => { universo[c.uf] = c.universo; });
+    const universoTotal = (DASH && DASH.universo_vsm_total) || 0;
+
+    // Agrega a base filtrada por estado para a métrica ativa.
+    const porUF = {}; ufs.forEach(u => porUF[u] = 0);
+    let total = 0;
+    for (const e of EMPRESAS) {
+      const v = apVale(e, metric.key);
+      if (!v) continue;
+      total += v;
+      const u = String(e.uf || "").trim().toUpperCase();
+      if (u in porUF) porUF[u] += v;
+    }
+    const base = EMPRESAS.length; // total de empresas no filtro atual
+    const maxUF = Math.max(1, ...ufs.map(u => porUF[u]));
+
+    // --- Indicador geral (hero) ---
+    let sub = "", metaBar = "";
+    if (metric.key === "empresas") {
+      const pctMeta = universoTotal ? (total / universoTotal) * 100 : 0;
+      sub = universoTotal
+        ? `<span><b>${apPct(pctMeta)}%</b> do universo VSM</span><span>· ${total} de ${universoTotal} revendas</span>`
+        : `<span>empresas na seleção atual</span>`;
+      metaBar = universoTotal
+        ? `<div class="meta-track"><div class="meta-fill" style="width:${Math.min(100, pctMeta)}%"></div></div>` : "";
+    } else {
+      const pctShare = base ? (total / base) * 100 : 0;
+      sub = `<span><b>${apPct(pctShare)}%</b> das ${base} empresas da seleção</span>`;
+      metaBar = `<div class="meta-track"><div class="meta-fill" style="width:${Math.min(100, pctShare)}%;background:${corHex}"></div></div>`;
+    }
+
+    // --- Cartões por estado ---
+    const cards = ufs.map(u => {
+      const val = porUF[u];
+      const nome = (B.uf_nomes && B.uf_nomes[u]) || u;
+      let pct, barW, foot;
+      if (metric.key === "empresas") {
+        // % = atingimento da meta estadual (cobertura do universo VSM)
+        const uni = universo[u] || 0;
+        pct = uni ? (val / uni) * 100 : 0;
+        barW = Math.min(100, pct);
+        foot = `<span class="sm">${val} / ${uni || "—"}</span>`;
+      } else {
+        // % = participação no total da métrica; barra relativa ao estado líder
+        pct = total ? (val / total) * 100 : 0;
+        barW = (val / maxUF) * 100;
+        foot = `<span class="sm">${apPct(pct)}% do total</span>`;
+      }
+      const on = ufSel === u ? " on" : "";
+      return `<button type="button" class="apu-state${on}" onclick="App.apSelUF('${u}')"
+          title="${esc(nome)} — clique para filtrar o mapa e a lista por este estado">
+        <div class="top"><span class="uf">${esc(u)}</span><span class="n">${val}</span></div>
+        <div class="track"><div class="fill" style="width:${barW}%;background:${corHex}"></div></div>
+        <div class="foot">${foot}<span class="pct" style="color:${corHex}">${apPct(pct)}%</span></div>
+      </button>`;
+    }).join("");
+
+    const chips = AP_METRICS.map(m =>
+      `<button type="button" class="${m.key === apMetric ? "on" : ""}" onclick="App.apMetrica('${m.key}')">${esc(m.label)}</button>`
+    ).join("");
+
+    box.innerHTML = `
+      <div class="hd">
+        <h2>Apuração da prospecção${infoIco("Indicadores em tempo real da base filtrada ao lado. Alterne a métrica e clique num estado para filtrar o mapa e a lista.", "Apuração da prospecção")}</h2>
+      </div>
+      <div class="bd">
+        <div class="apu-metrics" role="group" aria-label="Métrica">${chips}</div>
+        <div class="apu-hero">
+          <div class="tt">${esc(metric.tit)}</div>
+          <div class="big">${total}</div>
+          <div class="sub">${sub}</div>
+          ${metaBar}
+        </div>
+        <div>
+          <div class="apu-sec-tt">Prospecção por estado${infoIco("Cada cartão mostra o valor da métrica no estado e a barra de desempenho. Na métrica 'Empresas', o percentual é o atingimento da meta (cobertura do universo VSM); nas demais, é a participação no total.", "Prospecção por estado")}</div>
+          ${total || base ? `<div class="apu-states">${cards}</div>` : `<div class="apu-empty">Nenhuma empresa para os filtros atuais.</div>`}
+        </div>
+      </div>`;
+  }
+
+  // Alterna a métrica do painel sem refazer a busca (recalcula de EMPRESAS).
+  function apMetrica(m) { apMetric = m; renderApuracao(); }
+
+  // Clique num estado do painel: filtra o mapa/lista por aquele estado (ou limpa
+  // se já estava selecionado). Reaproveita o fluxo de ufMudou() para sincronizar.
+  function apSelUF(uf) {
+    const campo = $("f-uf");
+    if (!campo) return;
+    campo.value = campo.value === uf ? "" : uf; // alterna
+    sel = null;                                  // zera microrregião selecionada
+    const mr = $("f-mr"); if (mr) mr.value = "";
+    $("map-ctx").textContent = "Concentração de empresas por microrregião · marcadores = empresas por status";
+    ufMudou();
   }
 
   // ==================== PAINEL (dashboard) ====================
@@ -1333,11 +1593,18 @@ const App = (() => {
     if (e.exp_antenas) chips.push("Experiência c/ antenas");
     if (e.equipe_tecnica) chips.push("Equipe técnica");
     if (e.loja_fisica) chips.push("Loja física");
-    const contatos = (e.contatos || []).map(c => `
-      <div class="tl"><div class="m">${esc(c.data || "")} · ${esc(c.tipo || "")}${c.responsavel ? " · " + esc(c.responsavel) : ""}
+    const contatos = (e.contatos || []).map(c => {
+      // Carimbo automático: quem registrou no sistema e o momento exato do registro.
+      const carimbo = c.criado_por
+        ? "registrado por " + esc(c.criado_por) + (c.criado_em ? " · " + esc(fmtData(c.criado_em)) : "")
+        : (c.criado_em ? "registrado em " + esc(fmtData(c.criado_em)) : "");
+      return `
+      <div class="tl"><div class="m">${esc(fmtData(c.data) || c.data || "")} · ${esc(c.tipo || "")}${c.responsavel ? " · " + esc(c.responsavel) : ""}
         <button class="lnk danger" style="float:right" onclick="App.delContato(${c.id})">excluir</button></div>
       <div class="x">${esc(c.resumo || "")}</div>
-      ${c.proxima_acao ? `<div class="m">→ ${esc(c.proxima_acao)} ${c.proxima_acao_data ? "(" + esc(c.proxima_acao_data) + ")" : ""}</div>` : ""}</div>`).join("");
+      ${c.proxima_acao ? `<div class="m">→ ${esc(c.proxima_acao)} ${c.proxima_acao_data ? "(" + esc(c.proxima_acao_data) + ")" : ""}</div>` : ""}
+      ${carimbo ? `<div class="m" style="opacity:.72;font-size:11.5px">${carimbo}</div>` : ""}</div>`;
+    }).join("");
     const filiais = (e.filiais || []).map(f => `
       <div class="filial"><span>${esc(f.nome || "Filial")} ${f.cidade ? "· " + esc(f.cidade) : ""} ${f.uf ? esc(f.uf) : ""}</span>
         <button class="lnk danger" onclick="App.delFilial(${f.id})">excluir</button></div>`).join("");
@@ -1392,7 +1659,7 @@ const App = (() => {
         <div class="grid2" style="margin-top:12px">
           <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
           <div class="fld"><label>Data</label><input type="date" id="ct-data"></div>
-          <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "")}</select></div>
+          <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "— eu (quem registra) —")}</select></div>
           <div class="fld"><label>Próxima ação (data)</label><input type="date" id="ct-pad"></div>
           <div class="fld full"><label>Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
           <div class="fld full"><label>Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
@@ -1545,11 +1812,13 @@ const App = (() => {
     init, view, ufMudou, limparFiltros, buscaDebounced, tema,
     abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus, aplicarFaixaSugerida,
     addContato, delContato, addFilial, delFilial, excluir, realce,
+    apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
     varreduraAgora, fuFiltrarUF,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
+    toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,
   };
 })();
 
