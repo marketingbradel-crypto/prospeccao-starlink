@@ -154,7 +154,7 @@ function montarEmpresa(data: Row, novo = true): Row {
   if ("cnpj" in e) e.cnpj_norm = soDigitos(e.cnpj);
 
   if (novo) {
-    if (!e.status) e.status = "Prospectado";
+    if (!e.status) e.status = "Aguardando contato";
     if (!e.canal) e.canal = "Telecom";
     if (!e.status_vivensis) e.status_vivensis = "Sem credenciamento";
     e.criado_em = agora();
@@ -296,12 +296,14 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
   if (prio) { where.push("prioridade=?"); params.push(prio); }
   const faixa = limpar(q.faixa);
   if (faixa) { where.push("faixa_potencial=?"); params.push(faixa); }
+  const pend = limpar(q.pendencia);
+  if (pend) { where.push("pendencia_vsm=?"); params.push(pend); }
   const vendeu = String(q.vendeu ?? "").toLowerCase();
   if (["1", "true", "sim"].includes(vendeu)) where.push("ja_vendeu=1");
   else if (["0", "nao", "não", "false"].includes(vendeu)) where.push("(ja_vendeu=0 OR ja_vendeu IS NULL)");
-  if (["1", "true", "sim"].includes(q.credenciado ?? "")) where.push("status='Credenciado'");
+  if (["1", "true", "sim"].includes(q.credenciado ?? "")) where.push("status='Pronto para venda'");
   if (["1", "true", "sim"].includes(q.potencial ?? ""))
-    where.push("status IN ('Prospectado','Primeiro contato realizado','Em negociação','Interessado')");
+    where.push("status IN ('Aguardando contato','Em atendimento')");
   if (["1", "true", "sim"].includes(q.telecom ?? "")) where.push("(trabalha_telecom=1 OR ja_starlink=1)");
   const busca = limpar(q.q);
   if (busca) {
@@ -565,6 +567,7 @@ app.get("/api/bootstrap", (c) => {
     uf_nomes: nomes,
     status: L.STATUS,
     status_vivensis: L.STATUS_VIVENSIS,
+    pendencias_vsm: L.PENDENCIAS_VSM,
     canais: L.CANAIS,
     responsaveis: L.RESPONSAVEIS,
     origens: L.ORIGENS,
@@ -1065,7 +1068,7 @@ app.get("/api/mapa", async (c) => {
       regioes[chave] = agg;
     }
     agg.count += 1;
-    if (status === "Credenciado") agg.credenciados += 1;
+    if (status === "Pronto para venda") agg.credenciados += 1;
     agg.por_cor[cor] = (agg.por_cor[cor] ?? 0) + 1;
     const cent = geo.centroideRegiao(uf, mr);
     if (cent) {
@@ -1108,6 +1111,9 @@ app.get("/api/dashboard", async (c) => {
   const porFaixa: Record<string, number> = {};
   for (const f of L.FAIXAS_POTENCIAL) porFaixa[f] = 0;
   let semFaixa = 0, jaVenderam = 0;
+  // Pendencias VSM (Capilaridade): quem falta treinar / assinar contrato / sem pendencia.
+  // O valor combinado "Falta treinar e assinar contrato" soma nas duas pendencias.
+  let pendTreinar = 0, pendContrato = 0, semPendencia = 0;
   // Evolucao no tempo: leads e credenciamentos por mes (YYYY-MM).
   const leadsPorMes: Record<string, number> = {};
   const credPorMes: Record<string, number> = {};
@@ -1127,7 +1133,7 @@ app.get("/api/dashboard", async (c) => {
     if (r.cidade) municipios.add(`${uf}|${String(r.cidade).trim().toLowerCase()}`);
     if (r.microrregiao) microrregioes.add(`${uf}|${r.microrregiao}`);
     const cor = L.corDoStatus(st);
-    if (st === "Credenciado") credenciados += 1;
+    if (st === "Pronto para venda") credenciados += 1;
     else if (cor === "amarelo") emNegociacao += 1;
     else if (cor === "laranja") aguardando += 1;
     else if (cor === "azul") potenciais += 1;
@@ -1136,6 +1142,13 @@ app.get("/api/dashboard", async (c) => {
     const fx = (r.faixa_potencial || "").trim();
     if (fx && fx in porFaixa) porFaixa[fx] += 1; else semFaixa += 1;
     if (toBoolInt(r.ja_vendeu)) jaVenderam += 1;
+
+    const pend = String(r.pendencia_vsm || "").trim().toLowerCase();
+    if (pend) {
+      if (pend.includes("treinar")) pendTreinar += 1;
+      if (pend.includes("contrato")) pendContrato += 1;
+      if (pend === "sem pendência" || pend === "sem pendencia") semPendencia += 1;
+    }
 
     // Serie mensal: usa data_lead (cai para criado_em se ausente).
     const mLead = mesDe(r.data_lead) || mesDe(r.criado_em);
@@ -1207,6 +1220,7 @@ app.get("/api/dashboard", async (c) => {
     taxa_conversao: taxa, por_status: porStatus, por_uf: porUf, por_segmento: porSegmentoOrd,
     serie_mensal: serieMensal, tempos_funil: temposFunil,
     por_faixa: porFaixa, sem_faixa: semFaixa, ja_venderam: jaVenderam,
+    pend_treinar: pendTreinar, pend_contrato: pendContrato, sem_pendencia: semPendencia,
     cobertura_vsm: coberturaVsm, universo_vsm_total: universoVsmTotal,
     mapeadas_vsm_total: mapeadasVsmTotal,
   });
@@ -1222,7 +1236,7 @@ app.get("/api/dashboard", async (c) => {
 // Campos usados ja existem na tabela empresas (proxima_acao, proxima_acao_data,
 // data_ultimo_contato). Nada de novo no schema.
 // --------------------------------------------------------------------------
-const STATUS_FOLLOWUP_FECHADO = new Set(["Credenciado", "Não interessado"]);
+const STATUS_FOLLOWUP_FECHADO = new Set(["Não interessado", "Sem retorno"]);
 const FOLLOWUP_FRIO_DIAS = 14; // sem contato ha N dias (e sem acao marcada) => "parado"
 
 // Diferenca COM SINAL em dias entre duas datas "YYYY-MM-DD" (b - a). NaN se invalida.
@@ -1242,7 +1256,8 @@ app.get("/api/follow-up", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
             telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
-            data_ultimo_contato, faixa_potencial, origem_contato
+            data_ultimo_contato, faixa_potencial, origem_contato,
+            pendencia_vsm, ja_vendeu, vendas_vsm, instalacoes_vsm
        FROM empresas`
   ).all<Row>();
 
@@ -1259,6 +1274,10 @@ app.get("/api/follow-up", async (c) => {
       data_ultimo_contato: String(r.data_ultimo_contato || "").slice(0, 10),
       faixa_potencial: r.faixa_potencial || "",
       origem_contato: r.origem_contato || "",
+      pendencia_vsm: r.pendencia_vsm || "",
+      ja_vendeu: toBoolInt(r.ja_vendeu) ? 1 : 0,
+      vendas_vsm: Number(r.vendas_vsm) || 0,
+      instalacoes_vsm: Number(r.instalacoes_vsm) || 0,
     };
     if (pad) {
       const d = diasSinal(hojeStr, pad); // <0 vencida, 0 hoje, >0 futura

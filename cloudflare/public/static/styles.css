@@ -397,7 +397,7 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .fu-grupo-top{display:flex;align-items:center;gap:9px}
 .fu-grupo-hd h3{font-size:14px;margin:0;white-space:nowrap}
 .fu-grupo-sub{color:var(--muted);font-size:11.5px;margin-top:2px}
-.fu-toolbar{display:flex;justify-content:flex-end;margin:2px 0 6px}
+.fu-toolbar{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px 16px;margin:2px 0 10px}
 .fu-filtro{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
 .fu-filtro select{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
 .fu-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 7px;
@@ -428,6 +428,10 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .fu-org.org-inbound{background:#e3f2fb;color:#1783b0}
 .fu-org.org-parc{background:#eceafb;color:#5b4fd1}
 .fu-org.org-outro{background:#eef2f7;color:#64748b}
+/* Tags VSM no card (pendência de treino/contrato + já fez venda). Fundo suave,
+   cantos arredondados; a cor vem inline (padrão por classificação de pendência). */
+.fu-tag-vsm{font-size:10.5px;font-weight:700;line-height:1.5;padding:1px 8px;border-radius:999px;
+  white-space:nowrap;letter-spacing:.01em;flex-shrink:0;max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .fu-acao{font-size:12.5px;color:var(--fg);margin-top:3px}
 .fu-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;text-align:right}
 .fu-tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--muted);white-space:nowrap}

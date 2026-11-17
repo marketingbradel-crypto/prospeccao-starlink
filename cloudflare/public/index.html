@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mapa Estratégico de Prospecção · Bradel Starlink</title>
-<link rel="stylesheet" href="/static/styles.css?v=20261117a">
+<link rel="stylesheet" href="/static/styles.css?v=202611171153">
 </head>
 <body>
 
@@ -65,16 +65,17 @@
           <label class="fld"><span>Estado <span class="info" tabindex="0" role="button" aria-label="Ajuda: Estado" data-tip="Filtra por UF de atuação (PA, MA, TO, GO). Ao escolher um estado, o mapa desce para o detalhe de microrregiões e municípios dele."></span></span><select id="f-uf" onchange="App.ufMudou()"></select></label>
           <label class="fld"><span>Microrregião <span class="info" tabindex="0" role="button" aria-label="Ajuda: Microrregião" data-tip="Agrupamento de municípios vizinhos (padrão IBGE). Refina o filtro dentro do estado escolhido. Escolha um estado primeiro."></span></span><select id="f-mr"></select></label>
           <label class="fld"><span>Segmento <span class="info" tabindex="0" role="button" aria-label="Ajuda: Segmento" data-tip="Ramo de atividade da empresa (ex.: informática, telecom, materiais de construção). Ajuda a achar perfis aderentes à Starlink."></span></span><select id="f-seg"></select></label>
-          <label class="fld"><span>Status comercial <span class="info" tabindex="0" role="button" aria-label="Ajuda: Status comercial" data-tip="Etapa da empresa no funil: de prospectado a em negociação, aguardando documentação, credenciado ou perdido."></span></span><select id="f-status"></select></label>
+          <label class="fld"><span>Status comercial <span class="info" tabindex="0" role="button" aria-label="Ajuda: Status comercial" data-tip="Etapa da empresa no funil: de aguardando contato e em atendimento até pronto para venda, ou perdido/sem retorno."></span></span><select id="f-status"></select></label>
           <label class="fld"><span>Potencial (vendas/mês) <span class="info" tabindex="0" role="button" aria-label="Ajuda: Potencial de vendas por mês" data-tip="Faixa de quantas antenas a revenda vende por mês (10+, 20+, 30+…). Use para priorizar quem tem maior potencial."></span></span><select id="f-faixa"></select></label>
+          <label class="fld"><span>Pendência (VSM) <span class="info" tabindex="0" role="button" aria-label="Ajuda: Pendência de treino/contrato" data-tip="Situação do parceiro no VSM (planilha Vivensis): se falta assinar contrato, falta treinar, ambos, ou está sem pendência."></span></span><select id="f-pend"></select></label>
           <label class="fld"><span>Já fez venda? <span class="info" tabindex="0" role="button" aria-label="Ajuda: Já fez venda" data-tip="Mostra só quem já vendeu ao menos uma antena, ou só quem ainda não vendeu."></span></span>
             <select id="f-vendeu"><option value="">Todos</option><option value="sim">Sim — já vendeu</option><option value="nao">Não — ainda não</option></select>
           </label>
           <label class="fld"><span>Responsável <span class="info" tabindex="0" role="button" aria-label="Ajuda: Responsável" data-tip="Filtra pelas empresas sob responsabilidade de cada pessoa da equipe interna."></span></span><select id="f-resp"></select></label>
           <label class="fld"><span>Canal <span class="info" tabindex="0" role="button" aria-label="Ajuda: Canal" data-tip="Por onde a empresa opera ou compra (ex.: Vivensis/VSM, venda direta, indicação)."></span></span><select id="f-canal"></select></label>
           <div class="chkrow">
-            <label class="chk2"><input type="checkbox" id="f-cred"> Só credenciados <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só credenciados" data-tip="Mostra apenas as revendas já credenciadas (homologadas como parceiras Starlink)."></span></label>
-            <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só potenciais" data-tip="Mostra apenas os leads ainda não credenciados que têm potencial de virar parceiros."></span></label>
+            <label class="chk2"><input type="checkbox" id="f-cred"> Só pronto p/ venda <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só pronto para venda" data-tip="Mostra apenas as revendas no estágio 'Pronto para venda' (prontas para vender Starlink)."></span></label>
+            <label class="chk2"><input type="checkbox" id="f-pot"> Só potenciais <span class="info" tabindex="0" role="button" aria-label="Ajuda: Só potenciais" data-tip="Mostra apenas os leads no início do funil (aguardando contato ou em atendimento)."></span></label>
             <label class="chk2"><input type="checkbox" id="f-tel"> Internet / Telecom <span class="info" tabindex="0" role="button" aria-label="Ajuda: Internet e Telecom" data-tip="Mostra só empresas que já atuam com internet/telecom — perfil mais aderente para revender Starlink."></span></label>
           </div>
         </div>
@@ -264,6 +265,6 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=20261117a"></script>
+<script src="/static/app.js?v=202611171153"></script>
 </body>
 </html>

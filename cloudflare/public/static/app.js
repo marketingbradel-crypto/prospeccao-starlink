@@ -20,6 +20,10 @@ const App = (() => {
   let FU = null;           // dados do follow-up carregados (/api/follow-up)
   let fuUF = "";           // filtro de estado aplicado no follow-up ("" = todos)
   let fuResp = null;       // filtro de responsável no follow-up (null=ainda não iniciado; ""=todos)
+  let fuStatus = "";       // filtro de status ("" = todos)
+  let fuOrigem = "";       // filtro de origem/fonte do contato (VSM, Formulário, etc; "" = todas)
+  let fuVendeu = "";       // filtro "fez venda": "" todos, "1" sim, "0" não
+  let fuFaixa = "";        // filtro de faixa de potencial/volume ("" = todas)
   let ME = null;           // usuário logado (/api/me): { username, admin, must_change, responsavel }
   let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
   let apMetric = "empresas"; // métrica ativa no painel de indicadores ao lado do mapa
@@ -183,7 +187,7 @@ const App = (() => {
     { t: "Classificação e gestão", f: [
       { k: "faixa_potencial", l: "Potencial (vendas/mês)", type: "select", opts: "faixas_potencial", tip: "Classifica a empresa por volume estimado de vendas/mês. A ficha pode sugerir uma faixa automaticamente." },
       { k: "ja_vendeu", l: "Já fez venda?", type: "bool", tip: "Marque quando a empresa fechar a primeira venda de antena." },
-      { k: "status", l: "Status comercial", type: "select", opts: "status", tip: "Etapa atual no funil (prospectado → negociação → credenciado etc.). Define a cor no mapa e na lista." },
+      { k: "status", l: "Status comercial", type: "select", opts: "status", tip: "Etapa atual no funil (aguardando contato → em atendimento → … → pronto para venda). Define a cor no mapa e na lista." },
       { k: "status_vivensis", l: "Status Vivensis", type: "select", opts: "status_vivensis", tip: "Situação da revenda no portal Vivensis/VSM (credenciamento junto ao distribuidor)." },
       { k: "canal", l: "Canal", type: "select", opts: "canais", tip: "Por onde a empresa opera ou compra (ex.: Vivensis/VSM, venda direta, indicação)." },
       { k: "responsavel", l: "Responsável interno", type: "select", opts: "responsaveis", tip: "Pessoa da equipe interna encarregada de acompanhar esta empresa." },
@@ -375,10 +379,11 @@ const App = (() => {
     $("f-seg").innerHTML = selOpts(B.segmentos, "Todos");
     $("f-status").innerHTML = selOpts(B.status, "Todos");
     $("f-faixa").innerHTML = selOpts(B.faixas_potencial, "Todos");
+    $("f-pend").innerHTML = selOpts(B.pendencias_vsm || [], "Todas");
     $("f-resp").innerHTML = selOpts(B.responsaveis, "Todos");
     $("f-canal").innerHTML = selOpts(B.canais, "Todos");
     // f-uf usa onchange=App.ufMudou() no HTML; os demais recarregam direto
-    ["f-mr", "f-seg", "f-status", "f-faixa", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
+    ["f-mr", "f-seg", "f-status", "f-faixa", "f-pend", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
     ["f-cred", "f-pot", "f-tel"].forEach(id => $(id).addEventListener("change", recarregar));
     $("legend").innerHTML = ["verde", "azul", "amarelo", "laranja", "vermelho"]
       .map(c => `<span><i style="background:${hexCor(c)}"></i>${esc(B.cor_label[c])}</span>`).join("") +
@@ -397,7 +402,7 @@ const App = (() => {
     const p = new URLSearchParams();
     const add = (id, key) => { const v = $(id).value; if (v) p.set(key, v); };
     add("f-uf", "uf"); add("f-mr", "microrregiao"); add("f-seg", "segmento");
-    add("f-status", "status"); add("f-faixa", "faixa"); add("f-vendeu", "vendeu");
+    add("f-status", "status"); add("f-faixa", "faixa"); add("f-pend", "pendencia"); add("f-vendeu", "vendeu");
     add("f-resp", "responsavel"); add("f-canal", "canal");
     if ($("f-cred").checked) p.set("credenciado", "1");
     if ($("f-pot").checked) p.set("potencial", "1");
@@ -427,11 +432,11 @@ const App = (() => {
     const d = DASH;
     const cards = [
       { v: d.total, l: "Empresas mapeadas", c: "var(--accent)", tip: "Total de empresas cadastradas na base (visão geral, sem considerar os filtros do mapa)." },
-      { v: d.potenciais, l: "Potenciais", c: hexCor("azul"), tip: "Leads com potencial que ainda não foram credenciados." },
-      { v: d.em_negociacao, l: "Em negociação", c: hexCor("amarelo"), tip: "Empresas em conversa ativa para fechar o credenciamento." },
-      { v: d.credenciados, l: "Credenciados", c: hexCor("verde"), tip: "Revendas já homologadas como parceiras Starlink." },
+      { v: d.potenciais, l: "Potenciais", c: hexCor("azul"), tip: "Leads no início do funil (aguardando contato ou em atendimento)." },
+      { v: d.em_negociacao, l: "Em andamento", c: hexCor("amarelo"), tip: "Empresas em cadastro no VSM ou em treinamento." },
+      { v: d.credenciados, l: "Pronto p/ venda", c: hexCor("verde"), tip: "Revendas prontas para vender Starlink (estágio de conversão)." },
       { v: d.municipios, l: "Municípios alcançados", c: "var(--muted)", tip: "Quantidade de municípios distintos com ao menos uma empresa mapeada." },
-      { v: d.taxa_conversao + "%", l: "Conversão → credenciado", c: hexCor("verde"), tip: "Percentual da base que já virou credenciado (credenciados ÷ total de empresas)." },
+      { v: d.taxa_conversao + "%", l: "Conversão → pronto p/ venda", c: hexCor("verde"), tip: "Percentual da base que chegou a 'Pronto para venda' (÷ total de empresas)." },
     ];
     $("kpibar").innerHTML = cards.map(k =>
       `<div class="kpi"><div class="v" style="color:${k.c}">${k.v}</div><div class="l"><span class="dot" style="background:${k.c}"></span>${k.l}${k.tip ? infoIco(k.tip, k.l) : ""}</div></div>`
@@ -715,7 +720,7 @@ const App = (() => {
     const key = e.target.dataset.key, a = MAP.regioes[key];
     const [uf, n] = key.split("|");
     let rows = `<div class="r"><span>Empresas</span><span class="num">${a ? a.count : 0}</span></div>`;
-    if (a && a.credenciados) rows += `<div class="r"><span>Credenciados</span><span class="num">${a.credenciados}</span></div>`;
+    if (a && a.credenciados) rows += `<div class="r"><span>Pronto p/ venda</span><span class="num">${a.credenciados}</span></div>`;
     showTip(e, `<strong>${esc(n)} · ${uf}</strong>${rows}<div class="r" style="margin-top:4px;font-size:11.5px">clique para filtrar</div>`);
   }
   function markerTip(e) {
@@ -796,13 +801,13 @@ const App = (() => {
   ];
 
   // Vale 1 (ou 0) para uma empresa conforme a métrica selecionada.
-  // contatadas = saiu de "Prospectado"; qualificadas = em negociação/doc/credenciado
-  // (cores amarelo/laranja/verde); vendas = já fez venda.
+  // contatadas = saiu de "Aguardando contato"; qualificadas = em cadastro/treino/parceiro/
+  // contrato/pronto p/ venda (cores amarelo/laranja/verde); vendas = já fez venda.
   function apVale(e, metric) {
     const st = String(e.status || "").trim();
     const cor = corStatus(st);
     switch (metric) {
-      case "contatadas":   return st && st !== "Prospectado" ? 1 : 0;
+      case "contatadas":   return st && st !== "Aguardando contato" ? 1 : 0;
       case "qualificadas": return (cor === "amarelo" || cor === "laranja" || cor === "verde") ? 1 : 0;
       case "vendas":       return e.ja_vendeu ? 1 : 0;
       default:             return 1; // empresas
@@ -1061,10 +1066,13 @@ const App = (() => {
   function renderPainel() {
     const d = DASH;
     const stats = [
-      ["Total mapeadas", d.total], ["Potenciais", d.potenciais], ["Em negociação", d.em_negociacao],
-      ["Aguardando doc.", d.aguardando], ["Credenciados", d.credenciados], ["Perdidos/sem retorno", d.perdidos],
+      ["Total mapeadas", d.total], ["Potenciais", d.potenciais], ["Em andamento", d.em_negociacao],
+      ["Parceiros/contrato", d.aguardando], ["Pronto p/ venda", d.credenciados], ["Perdidos/sem retorno", d.perdidos],
       ["Municípios", d.municipios], ["Microrregiões", d.microrregioes],
       ["Já venderam", d.ja_venderam || 0],
+      ["Falta treinar", d.pend_treinar || 0, hexCor("azul")],
+      ["Falta assinar contrato", d.pend_contrato || 0, hexCor("laranja")],
+      ["Sem pendência", d.sem_pendencia || 0, hexCor("verde")],
     ];
     const statusData = B.status.map(s => [s, d.por_status[s] || 0]).filter(x => x[1] > 0);
     const ufData = B.ufs.map(u => [u, d.por_uf[u] || 0]);
@@ -1074,7 +1082,7 @@ const App = (() => {
     const tf = d.tempos_funil || {};
     $("view-painel").innerHTML = `
       <div class="card wide"><div class="hd"><h2>Resumo geral</h2></div><div class="bd">
-        <div class="statgrid">${stats.map(s => `<div class="stat"><div class="v">${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")}</div>
+        <div class="statgrid">${stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")}</div>
       </div></div>
       <div class="card"><div class="hd"><h2>Por status comercial${infoIco("Distribuição das empresas por etapa do funil comercial.", "Por status comercial")}</h2></div><div class="bd">${statusData.length ? chart(statusData, l => hexCor(corStatus(l))) : '<div class="empty">Sem dados.</div>'}</div></div>
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
@@ -1088,19 +1096,19 @@ const App = (() => {
       </div></div>
       <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)", { foraDaEscala: ["Sem classificação"] }) : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>
-      <div class="card wide"><div class="hd"><h2>Funil de conversão${infoIco("Do total prospectado até os credenciados, passando pelas empresas em andamento. A taxa mostra quantos % da base chegaram a credenciado.", "Funil de conversão")}</h2></div><div class="bd">
+      <div class="card wide"><div class="hd"><h2>Funil de conversão${infoIco("Da base total até as empresas prontas para venda, passando pelas em andamento. A taxa mostra quantos % da base chegaram a 'Pronto para venda'.", "Funil de conversão")}</h2></div><div class="bd">
         <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">
-          <div class="stat"><div class="v">${d.total}</div><div class="l">Prospectados (base)</div></div>
+          <div class="stat"><div class="v">${d.total}</div><div class="l">Base total</div></div>
           <div class="stat"><div class="v" style="color:${hexCor("amarelo")}">${d.em_negociacao + d.aguardando}</div><div class="l">Em andamento</div></div>
-          <div class="stat"><div class="v" style="color:${hexCor("verde")}">${d.credenciados}</div><div class="l">Credenciados (${d.taxa_conversao}%)</div></div>
+          <div class="stat"><div class="v" style="color:${hexCor("verde")}">${d.credenciados}</div><div class="l">Pronto p/ venda (${d.taxa_conversao}%)</div></div>
         </div>
       </div></div>
-      <div class="card wide"><div class="hd"><h2>Evolução mensal${infoIco("Novas empresas (leads) adicionadas e credenciamentos fechados a cada mês.", "Evolução mensal")}</h2></div><div class="bd">${chartMensal(d.serie_mensal)}</div></div>
-      <div class="card wide"><div class="hd"><h2>Tempo médio no funil${infoIco("Dias médios entre as etapas: do lead ao 1º contato, do lead ao credenciamento e do credenciamento à 1ª venda.", "Tempo médio no funil")}</h2></div><div class="bd">
+      <div class="card wide"><div class="hd"><h2>Evolução mensal${infoIco("Novas empresas (leads) adicionadas e conversões (pronto para venda) fechadas a cada mês.", "Evolução mensal")}</h2></div><div class="bd">${chartMensal(d.serie_mensal)}</div></div>
+      <div class="card wide"><div class="hd"><h2>Tempo médio no funil${infoIco("Dias médios entre as etapas: do lead ao 1º contato, do lead até pronto p/ venda e de pronto p/ venda à 1ª venda.", "Tempo médio no funil")}</h2></div><div class="bd">
         <div class="statgrid" style="grid-template-columns:1fr 1fr 1fr">
           ${tempoStat("Lead → 1º contato", tf.lead_contato)}
-          ${tempoStat("Lead → credenciamento", tf.lead_cred)}
-          ${tempoStat("Credenciado → 1ª venda", tf.cred_venda)}
+          ${tempoStat("Lead → pronto p/ venda", tf.lead_cred)}
+          ${tempoStat("Pronto p/ venda → 1ª venda", tf.cred_venda)}
         </div>
       </div></div>`;
   }
@@ -1364,7 +1372,17 @@ const App = (() => {
     { k: "parados", tit: "Parados", sub: "sem contato há 14+ dias", cls: "fu-parado", desc: "sem próxima ação marcada" },
   ];
 
-  function fuFiltrarUF(v) { fuUF = v || ""; renderFollowUp(); }
+  // Filtros do follow-up: um único handler, roteado pelo id do <select>.
+  function fuFiltrar(id, v) {
+    v = v || "";
+    if (id === "fu-resp") fuResp = v || null;
+    else if (id === "fu-uf") fuUF = v;
+    else if (id === "fu-status") fuStatus = v;
+    else if (id === "fu-origem") fuOrigem = v;
+    else if (id === "fu-vendeu") fuVendeu = v;
+    else if (id === "fu-faixa") fuFaixa = v;
+    renderFollowUp();
+  }
 
   function renderFollowUp() {
     const box = $("fu-body");
@@ -1374,29 +1392,43 @@ const App = (() => {
       box.innerHTML = `<div class="empty">Tudo em dia 🎉 — nenhuma ação vencida ou pendente. Marque a "próxima ação" dos prospects na ficha para acompanhá-los aqui.</div>`;
       return;
     }
-    // Estados e responsáveis presentes no follow-up (para os filtros)
+    // Valores presentes no follow-up (para popular os filtros dinamicamente)
     const todos = FU_GRUPOS.flatMap(g => d[g.k] || []);
     const ufs = [...new Set(todos.map(x => x.uf).filter(Boolean))].sort();
     const resps = [...new Set(todos.map(x => x.responsavel).filter(Boolean).concat(fuResp ? [fuResp] : []))].sort();
+    const statuses = [...new Set(todos.map(x => x.status).filter(Boolean).concat(fuStatus ? [fuStatus] : []))].sort();
+    const faixas = [...new Set(todos.map(x => x.faixa_potencial).filter(Boolean).concat(fuFaixa ? [fuFaixa] : []))].sort();
+    // Origens: agrupadas pela etiqueta padronizada (VSM, Formulário, Prospecção…).
+    const origens = [...new Set(todos.map(x => { const o = origemInfo(x.origem_contato); return o ? o.label : ""; }).filter(Boolean).concat(fuOrigem ? [fuOrigem] : []))].sort();
+    const sel = (id, label, val, opts) => `
+        <label class="fu-filtro">${label}
+          <select id="${id}" onchange="App.fuFiltrar('${id}', this.value)">
+            <option value="">Todos</option>
+            ${opts.map(o => { const v = typeof o === "string" ? o : o.v, t = typeof o === "string" ? o : o.t;
+              return `<option value="${esc(v)}"${v === val ? " selected" : ""}>${esc(t)}</option>`; }).join("")}
+          </select>
+        </label>`;
     const filtro = `
       <div class="fu-toolbar">
-        <label class="fu-filtro">Responsável
-          <select id="fu-resp" onchange="App.fuFiltrarResp(this.value)">
-            <option value="">Todos</option>
-            ${resps.map(r => `<option value="${esc(r)}"${r === fuResp ? " selected" : ""}>${esc(r)}</option>`).join("")}
-          </select>
-        </label>
-        <label class="fu-filtro">Estado
-          <select id="fu-uf" onchange="App.fuFiltrarUF(this.value)">
-            <option value="">Todos</option>
-            ${ufs.map(u => `<option value="${esc(u)}"${u === fuUF ? " selected" : ""}>${esc(u)}</option>`).join("")}
-          </select>
-        </label>
+        ${sel("fu-resp", "Responsável", fuResp || "", resps)}
+        ${sel("fu-uf", "Estado", fuUF, ufs)}
+        ${sel("fu-status", "Status", fuStatus, statuses)}
+        ${sel("fu-origem", "Origem", fuOrigem, origens)}
+        ${sel("fu-vendeu", "Fez venda", fuVendeu, [{ v: "1", t: "Sim" }, { v: "0", t: "Não" }])}
+        ${sel("fu-faixa", "Potencial", fuFaixa, faixas)}
       </div>`;
+    const passa = (x) => {
+      if (fuResp && (x.responsavel || "") !== fuResp) return false;
+      if (fuUF && (x.uf || "") !== fuUF) return false;
+      if (fuStatus && (x.status || "") !== fuStatus) return false;
+      if (fuFaixa && (x.faixa_potencial || "") !== fuFaixa) return false;
+      if (fuVendeu === "1" && !(x.ja_vendeu === 1 || x.ja_vendeu === true)) return false;
+      if (fuVendeu === "0" && (x.ja_vendeu === 1 || x.ja_vendeu === true)) return false;
+      if (fuOrigem) { const o = origemInfo(x.origem_contato); if (!o || o.label !== fuOrigem) return false; }
+      return true;
+    };
     const corpo = FU_GRUPOS.map(g => {
-      let lista = d[g.k] || [];
-      if (fuResp) lista = lista.filter(x => (x.responsavel || "") === fuResp);
-      if (fuUF) lista = lista.filter(x => (x.uf || "") === fuUF);
+      const lista = (d[g.k] || []).filter(passa);
       if (!lista.length) return "";
       return `
         <div class="fu-grupo ${g.cls}">
@@ -1407,7 +1439,7 @@ const App = (() => {
           <div class="fu-rows">${lista.map(fuRow).join("")}</div>
         </div>`;
     }).join("");
-    box.innerHTML = filtro + (corpo || `<div class="empty">Nenhum prospect ${fuUF ? "em " + esc(fuUF) : "encontrado"}.</div>`);
+    box.innerHTML = filtro + (corpo || `<div class="empty">Nenhum prospect com os filtros aplicados.</div>`);
   }
 
   function atualizarBadgeFollowUp(d) {
@@ -1441,6 +1473,35 @@ const App = (() => {
     return `<span class="fu-org ${o.cls}" title="Origem: ${esc(origem)}">${esc(o.label)}</span>`;
   }
 
+  // Tag compacta de fundo suave (texto colorido sobre tinta clara da mesma cor).
+  function tagSuave(txt, hex, title) {
+    return `<span class="fu-tag-vsm" title="${esc(title || txt)}" style="color:${hex};background:${hex}1f;border:1px solid ${hex}3d">${esc(txt)}</span>`;
+  }
+
+  // Tags VSM do card, a partir dos dados da Capilaridade-vsm + perfil comercial:
+  //   1) Pendência (treino/contrato) — cor por classificação; neutra se vazia.
+  //   2) Já fez venda (perfil comercial).
+  //   3) Vendas concluídas (vendas_vsm) — só quando > 0.
+  //   4) Instalações executadas (instalacoes_vsm) — só quando > 0.
+  // Usa exatamente os dados já cadastrados na ficha (nada é calculado aqui).
+  function tagsVSM(x) {
+    const t = [];
+    const p = String(x.pendencia_vsm || "").trim();
+    if (p) t.push(tagSuave(p, corPendencia(p), "Pendência VSM: " + p));
+    else   t.push(tagSuave("Sem classificação", hexCor("cinza"), "Pendência VSM não classificada"));
+
+    const vendeu = x.ja_vendeu === 1 || x.ja_vendeu === true || x.ja_vendeu === "1";
+    t.push(vendeu
+      ? tagSuave("✓ Já fez venda", hexCor("verde"), "Já fez venda: Sim")
+      : tagSuave("Sem venda", hexCor("cinza"), "Já fez venda: Não"));
+
+    const v = Number(x.vendas_vsm) || 0;
+    const i = Number(x.instalacoes_vsm) || 0;
+    if (v > 0) t.push(tagSuave(`${v} ${v === 1 ? "venda" : "vendas"}`, "#0d8a74", `Vendas concluídas (VSM): ${v}`));
+    if (i > 0) t.push(tagSuave(`${i} ${i === 1 ? "instalação" : "instalações"}`, "#5b4fd1", `Instalações executadas (VSM): ${i}`));
+    return t.join("");
+  }
+
   function fuRow(x) {
     const loc = [cidadeCurta(x.cidade), x.uf].filter(Boolean).join(" · ");
     const tel = x.whatsapp || x.telefone || "";
@@ -1455,7 +1516,7 @@ const App = (() => {
     return `
       <div class="fu-row" onclick="App.abrirFicha(${x.id})">
         <div class="fu-main">
-          <div class="fu-head"><b>${esc(x.nome)}</b>${origemBadge(x.origem_contato)}</div>
+          <div class="fu-head"><b>${esc(x.nome)}</b>${origemBadge(x.origem_contato)}${tagsVSM(x)}</div>
           <span class="fu-meta">${esc(loc)}${x.status ? " · " + esc(x.status) : ""}${x.responsavel ? " · " + esc(x.responsavel) : ""}</span>
           ${acao}
         </div>
@@ -1922,6 +1983,47 @@ const App = (() => {
 
   function kv(label, val) { return val ? `<dt>${esc(label)}</dt><dd>${esc(val)}</dd>` : ""; }
 
+  // Paleta extra p/ classificações de pendência fora da lista conhecida —
+  // garante que QUALQUER valor novo da planilha ganhe uma cor própria e estável
+  // (determinística pelo texto), em vez de cair todo mundo em cinza.
+  const PEND_EXTRA_HEX = ["#7b3fc4", "#0d8a74", "#c43f7b", "#1783b0", "#5b4fd1", "#b26a00"];
+  function hashCor(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return PEND_EXTRA_HEX[Math.abs(h) % PEND_EXTRA_HEX.length];
+  }
+
+  // Cor do badge de pendência (planilha Capilaridade-vsm, coluna I).
+  // Os 4 status conhecidos têm cor fixa; valores novos recebem cor automática.
+  function corPendencia(p) {
+    const s = String(p || "").trim();
+    switch (s) {
+      case "": return hexCor("cinza");
+      case "Sem pendência": return hexCor("verde");
+      case "Falta assinar contrato": return hexCor("laranja");
+      case "Falta treinar": return hexCor("azul");
+      case "Falta treinar e assinar contrato": return hexCor("vermelho");
+      default: return hashCor(s);
+    }
+  }
+
+  // Bloco read-only com os dados do VSM (pendência + vendas + instalações).
+  // Só aparece quando a empresa foi casada com a planilha de capilaridade.
+  function capilaridadeVSM(e) {
+    const temPend = !!(e.pendencia_vsm && String(e.pendencia_vsm).trim());
+    const v = Number(e.vendas_vsm) || 0;
+    const i = Number(e.instalacoes_vsm) || 0;
+    if (!temPend && !v && !i) return "";
+    const badge = temPend
+      ? `<span style="display:inline-flex;align-items:center;font-size:12.5px;font-weight:700;border-radius:20px;padding:4px 12px;white-space:nowrap;color:#fff;background:${corPendencia(e.pendencia_vsm)}">${esc(e.pendencia_vsm)}</span>`
+      : "";
+    return `<div class="sec"><h4>Capilaridade VSM${infoIco("Dados do parceiro no VSM (planilha Vivensis): pendência de treino/contrato, vendas concluídas e instalações executadas. Atualizado por importação — não editável aqui.", "Capilaridade VSM")}</h4>
+      <dl class="kv">
+        ${temPend ? `<dt>Pendência</dt><dd>${badge}</dd>` : ""}
+        ${kv("Vendas concluídas", v)}${kv("Instalações executadas", i)}
+      </dl></div>`;
+  }
+
   // Pílula colorida da faixa de potencial (cor por faixa; cinza quando sem classificação).
   function faixaPill(faixa) {
     const hex = (B && B.faixa_hex && B.faixa_hex[faixa]) || "#9aa0ac";
@@ -1974,8 +2076,7 @@ const App = (() => {
         ? "registrado por " + esc(c.criado_por) + (c.criado_em ? " · " + esc(fmtData(c.criado_em)) : "")
         : (c.criado_em ? "registrado em " + esc(fmtData(c.criado_em)) : "");
       return `
-      <div class="tl"><div class="m">${esc(fmtData(c.data) || c.data || "")} · ${esc(c.tipo || "")}${c.responsavel ? " · " + esc(c.responsavel) : ""}
-        <button class="lnk danger" style="float:right" onclick="App.delContato(${c.id})">excluir</button></div>
+      <div class="tl"><div class="m">${esc(fmtData(c.data) || c.data || "")} · ${esc(c.tipo || "")}${c.responsavel ? " · " + esc(c.responsavel) : ""}</div>
       <div class="x">${esc(c.resumo || "")}</div>
       ${c.proxima_acao ? `<div class="m">→ ${esc(c.proxima_acao)} ${c.proxima_acao_data ? "(" + esc(c.proxima_acao_data) + ")" : ""}</div>` : ""}
       ${carimbo ? `<div class="m" style="opacity:.72;font-size:11.5px">${carimbo}</div>` : ""}</div>`;
@@ -2016,6 +2117,8 @@ const App = (() => {
           ${kv("Status Vivensis", e.status_vivensis)}
         </dl></div>
 
+      ${capilaridadeVSM(e)}
+
       ${e.observacoes ? `<div class="sec"><h4>Observações</h4><div>${esc(e.observacoes)}</div></div>` : ""}
 
       <div class="sec"><h4>Filiais / unidades</h4>
@@ -2036,12 +2139,12 @@ const App = (() => {
 
         <div id="ct-form" style="display:none;margin-top:12px">
           <div class="grid2">
-            <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
-            <div class="fld"><label>Data</label><input type="date" id="ct-data"></div>
+            <div class="fld"><label class="req">Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
+            <div class="fld"><label class="req">Data</label><input type="date" id="ct-data"></div>
             <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "— eu (quem registra) —")}</select></div>
-            <div class="fld"><label>Próxima ação (data)</label><input type="date" id="ct-pad"></div>
-            <div class="fld full"><label>Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
-            <div class="fld full"><label>Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
+            <div class="fld"><label class="req">Próxima ação (data)</label><input type="date" id="ct-pad"></div>
+            <div class="fld full"><label class="req">Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
+            <div class="fld full"><label class="req">Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
           </div>
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
             <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.cancelarContato()">Cancelar</button>
@@ -2138,7 +2241,13 @@ const App = (() => {
       tipo: $("ct-tipo").value, data: $("ct-data").value, responsavel: $("ct-resp").value,
       resumo: $("ct-resumo").value, proxima_acao: $("ct-pa").value, proxima_acao_data: $("ct-pad").value,
     };
-    if (!body.resumo && !body.tipo) { toast("Descreva o contato."); return; }
+    const faltando = [];
+    if (!body.tipo) faltando.push("Tipo");
+    if (!body.data) faltando.push("Data");
+    if (!body.proxima_acao_data) faltando.push("Próxima ação (data)");
+    if (!body.resumo.trim()) faltando.push("Resumo");
+    if (!body.proxima_acao.trim()) faltando.push("Próxima ação");
+    if (faltando.length) { toast("Preencha: " + faltando.join(", ") + "."); return; }
     if (btn) { btn.disabled = true; btn.textContent = "Salvando…"; }
     try {
       const r = await fetch("/api/empresas/" + cur.id + "/contatos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -2229,7 +2338,7 @@ const App = (() => {
     apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
-    varreduraAgora, fuFiltrarUF,
+    varreduraAgora, fuFiltrar,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,

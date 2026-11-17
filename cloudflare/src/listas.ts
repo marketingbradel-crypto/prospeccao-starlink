@@ -14,21 +14,32 @@ export const UNIVERSO_VSM: Record<string, number> = {
   TO: 120,
 };
 
-// Classificacao comercial — pipeline principal (9 valores do brief)
+// Classificacao comercial — pipeline principal (9 etapas).
+// Ordem = progressao no funil: contato -> atendimento -> cadastro/treino ->
+// parceiro/contrato -> pronto para venda; e as duas saidas (perdido/sem retorno).
+// "Pronto para venda" e o estagio de CONVERSAO (ver metrica credenciados no index.ts).
 export const STATUS = [
-  "Prospectado",
-  "Primeiro contato realizado",
-  "Em negociação",
-  "Interessado",
-  "Aguardando documentação",
-  "Documentação recebida",
-  "Credenciado",
+  "Aguardando contato",
+  "Em atendimento",
+  "Preencher o VSM",
+  "Em treinamento",
+  "Parceiro",
+  "Contrato assinado",
+  "Pronto para venda",
   "Não interessado",
   "Sem retorno",
 ];
 
 // Status Vivensis (credenciamento no portal) — secundario, mantido da planilha
 export const STATUS_VIVENSIS = ["Sem credenciamento", "Em credenciamento", "Credenciada"];
+
+// Pendencia de treino/contrato (planilha Capilaridade-vsm, coluna I). Somente leitura.
+export const PENDENCIAS_VSM = [
+  "Sem pendência",
+  "Falta assinar contrato",
+  "Falta treinar",
+  "Falta treinar e assinar contrato",
+];
 
 // Canal comercial
 export const CANAIS = ["Telecom", "Varejo (mercantil)"];
@@ -162,16 +173,17 @@ export const ETAPAS_FUNIL = [
   "Revenda cadastrada", "Primeira venda", "Revenda ativa", "Perdida/Descartada",
 ];
 
-// ---- Cores do mapa por status (legenda do brief) ----
-// verde=credenciado, azul=potencial, amarelo=negociacao, laranja=documentacao, vermelho=perdido/sem retorno
+// ---- Cores do mapa por status (legenda) ----
+// azul=inicio (contato/atendimento), amarelo=cadastro/treino, laranja=parceiro/contrato,
+// verde=pronto para venda (conversao), vermelho=perdido/sem retorno.
 export const STATUS_COR: Record<string, string> = {
-  "Credenciado": "verde",
-  "Prospectado": "azul",
-  "Primeiro contato realizado": "azul",
-  "Em negociação": "amarelo",
-  "Interessado": "amarelo",
-  "Aguardando documentação": "laranja",
-  "Documentação recebida": "laranja",
+  "Aguardando contato": "azul",
+  "Em atendimento": "azul",
+  "Preencher o VSM": "amarelo",
+  "Em treinamento": "amarelo",
+  "Parceiro": "laranja",
+  "Contrato assinado": "laranja",
+  "Pronto para venda": "verde",
   "Não interessado": "vermelho",
   "Sem retorno": "vermelho",
 };
@@ -186,10 +198,10 @@ export const COR_HEX: Record<string, string> = {
 };
 
 export const COR_LABEL: Record<string, string> = {
-  verde: "Parceiro credenciado",
-  azul: "Potencial parceiro identificado",
-  amarelo: "Em negociação",
-  laranja: "Aguardando documentação",
+  verde: "Pronto para venda",
+  azul: "Aguardando contato / em atendimento",
+  amarelo: "Preencher o VSM / em treinamento",
+  laranja: "Parceiro / contrato assinado",
   vermelho: "Prospecção não concluída / perdida",
 };
 
