@@ -26,6 +26,17 @@ if ([string]::IsNullOrWhiteSpace($msg)) {
   $msg = "Atualizacao da plataforma ($(Get-Date -Format 'dd/MM/yyyy HH:mm'))"
 }
 
+# 0) CACHE-BUSTING: estampa uma versao nova nos assets (app.js/styles.css).
+# Assim o navegador SEMPRE baixa a versao recem-publicada, em vez de usar o cache.
+# Roda antes do commit para a versao ir junto no commit e valer tambem no deploy via GitHub.
+Passo "Estampando versao dos assets (cache-busting)..."
+$idx = Join-Path $ProjDir "cloudflare\public\index.html"
+$ver = Get-Date -Format "yyyyMMddHHmm"
+$txt = [System.IO.File]::ReadAllText($idx)
+$txt = [regex]::Replace($txt, '(/static/(?:app\.js|styles\.css))\?v=[^"]*', "`${1}?v=$ver")
+[System.IO.File]::WriteAllText($idx, $txt, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "Versao dos assets: $ver" -ForegroundColor Green
+
 # 1) COMMIT (so se houver mudancas)
 Passo "Verificando mudancas no git..."
 $pendentes = git status --porcelain

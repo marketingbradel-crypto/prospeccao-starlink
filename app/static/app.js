@@ -623,7 +623,7 @@ const App = (() => {
           </div>
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
             <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.cancelarContato()">Cancelar</button>
-            <button class="btn primary" id="ct-salvar" onclick="App.addContato()">Salvar contato</button>
+            <button class="btn primary" id="ct-salvar" onclick="App.addContato()">Salvar atualização</button>
           </div>
         </div>
       </div>`;
@@ -696,7 +696,7 @@ const App = (() => {
   }
 
   // Abre o formulário de novo contato (passo 1). O registro só é efetivado
-  // ao clicar em "Salvar contato" (App.addContato).
+  // ao clicar em "Salvar atualização" (App.addContato).
   function novoContato() {
     const f = $("ct-form"); if (f) f.style.display = "";
     const b = $("ct-abrir"); if (b) b.style.display = "none";
@@ -723,7 +723,7 @@ const App = (() => {
       if (!r.ok) {
         const js = await r.json().catch(() => ({}));
         toast(js.erro || "Não foi possível registrar o contato.");
-        if (btn) { btn.disabled = false; btn.textContent = "Salvar contato"; }
+        if (btn) { btn.disabled = false; btn.textContent = "Salvar atualização"; }
         return;
       }
       toast("Contato registrado.");
@@ -732,7 +732,7 @@ const App = (() => {
       await abrirFicha(cur.id);
     } catch (e) {
       toast("Não foi possível registrar o contato.");
-      if (btn) { btn.disabled = false; btn.textContent = "Salvar contato"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Salvar atualização"; }
     }
   }
   async function delContato(id) {

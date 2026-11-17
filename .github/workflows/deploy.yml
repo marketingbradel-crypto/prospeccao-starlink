@@ -31,6 +31,14 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
+      # Cache-busting: estampa uma versao nova em app.js/styles.css para o navegador
+      # sempre baixar a versao recem-publicada (vale para deploys feitos direto pelo push).
+      - name: Cache-busting (estampar versao dos assets)
+        run: |
+          ver=$(date +%Y%m%d%H%M)
+          sed -i -E "s#(/static/(app\.js|styles\.css))\?v=[^\"]*#\1?v=$ver#g" public/index.html
+          echo "Versao dos assets: $ver"
+
       - name: Aplicar migrations no D1 (remoto)
         uses: cloudflare/wrangler-action@v3
         with:
