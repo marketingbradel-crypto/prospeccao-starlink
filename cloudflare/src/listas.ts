@@ -126,6 +126,7 @@ export const SEGMENTOS = [
   "Segurança eletrônica",
   "Assistência técnica",
   "Supermercado / Varejo",
+  "Móveis e eletro",
   "Outro",
 ];
 

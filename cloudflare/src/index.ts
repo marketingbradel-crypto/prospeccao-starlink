@@ -28,7 +28,7 @@ const EMPRESA_CAMPOS = [
   "faixa_potencial", "ja_vendeu",
   "interesse_parceiro", "origem_contato",
   "canal", "responsavel", "prioridade", "status", "status_vivensis", "etapa",
-  "motivo_perda", "observacoes",
+  "motivo_perda", "observacoes", "id_vsm",
   "data_lead", "data_primeiro_contato", "data_apresentacao", "data_interesse",
   "data_cadastro", "data_inicio_cred", "data_cred", "data_primeira_venda",
   "data_ultima_venda", "data_ultimo_contato", "proxima_acao", "proxima_acao_data",
@@ -42,7 +42,7 @@ const CAMPOS_TEXTO = new Set([
   "resp_nome", "resp_cargo", "resp_telefone", "resp_whatsapp", "resp_email",
   "segmento", "produtos", "capacidade_vendas_mes", "faixa_potencial", "interesse_parceiro",
   "origem_contato", "canal", "responsavel", "prioridade", "status",
-  "status_vivensis", "motivo_perda", "observacoes",
+  "status_vivensis", "motivo_perda", "observacoes", "id_vsm",
   "proxima_acao", "proxima_acao_data", "data_ultimo_contato",
 ]);
 const CAMPOS_BOOL = new Set(["trabalha_telecom", "ja_starlink", "exp_antenas", "equipe_tecnica", "loja_fisica", "possui_estoque", "ja_vendeu"]);
@@ -845,6 +845,9 @@ app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
   if (!atual) return c.notFound();
   const data = await jsonBody(c);
   const e = montarEmpresa(data, false);
+  // ID VSM e imutavel depois de definido: se a empresa ja tem um, ignora
+  // qualquer valor que venha do formulario (a UI tambem bloqueia o campo).
+  if (String(atual.id_vsm ?? "").trim() !== "") e.id_vsm = atual.id_vsm;
   const dup = await empresaDupCnpj(c.env.DB, e.cnpj_norm, eid);
   if (dup) return c.json({ erro: "Outra empresa já usa este CNPJ.", id: dup }, 409);
   // Diff dos campos que realmente mudaram (ignora carimbos automaticos).
@@ -2483,6 +2486,7 @@ const MODELO_COLS: [string, string][] = [
   ["Responsável interno", "responsavel"],
   ["Prioridade", "prioridade"],
   ["Status comercial", "status"],
+  ["ID VSM", "id_vsm"],
   ["Observações", "observacoes"],
 ];
 
@@ -2587,7 +2591,14 @@ app.post("/api/import", async (c) => {
       if (!nomeEmp) { ignorados += 1; continue; }
       const dup = await empresaDupCnpj(c.env.DB, soDigitos(data.cnpj));
       if (dup) {
-        await atualizarEmpresa(c.env.DB, dup, montarEmpresa(data, false));
+        const e = montarEmpresa(data, false);
+        // ID VSM e imutavel: nunca sobrescreve um ja definido, nem apaga com vazio.
+        if ("id_vsm" in e) {
+          const cur = await c.env.DB.prepare("SELECT id_vsm FROM empresas WHERE id=?").bind(dup).first<Row>();
+          if (String(cur?.id_vsm ?? "").trim() !== "") e.id_vsm = cur!.id_vsm;
+          else if (String(e.id_vsm ?? "").trim() === "") delete e.id_vsm;
+        }
+        await atualizarEmpresa(c.env.DB, dup, e);
         atualizados += 1;
       } else {
         const e = montarEmpresa(data, true);

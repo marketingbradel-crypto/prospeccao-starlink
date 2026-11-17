@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mapa Estratégico de Prospecção · Starlink</title>
-<link rel="stylesheet" href="/static/styles.css?v=202611171400">
+<link rel="stylesheet" href="/static/styles.css?v=202611171530">
 </head>
 <body>
 
@@ -18,7 +18,11 @@
     </div>
   </div>
 
-  <nav class="viewtabs" role="tablist" aria-label="Visão">
+  <button class="navtoggle" id="navtoggle" type="button" onclick="App.navToggle(event)" aria-label="Abrir menu" aria-expanded="false" aria-controls="viewtabs">
+    <span></span><span></span><span></span>
+  </button>
+
+  <nav id="viewtabs" class="viewtabs" role="tablist" aria-label="Visão">
     <button id="tab-mapa" class="on" onclick="App.view('mapa')" data-tip="Mapa interativo das revendas por região, com mapa de calor por microrregião e filtros à esquerda.">Mapa</button>
     <button id="tab-painel" onclick="App.view('painel')" data-tip="Indicadores e gráficos da base: status, cobertura VSM, funil de conversão e evolução mensal.">Dashboard</button>
     <button id="tab-followup" onclick="App.view('followup')" data-tip="Agenda de contatos: o que está vencido, o que fazer hoje e quais prospects esfriaram.">Follow-up</button>
@@ -267,6 +271,6 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=202611171400"></script>
+<script src="/static/app.js?v=202611171530"></script>
 </body>
 </html>

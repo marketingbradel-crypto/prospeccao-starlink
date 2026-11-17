@@ -24,6 +24,7 @@ const App = (() => {
   let fuOrigem = "";       // filtro de origem/fonte do contato (VSM, Formulário, etc; "" = todas)
   let fuVendeu = "";       // filtro "fez venda": "" todos, "1" sim, "0" não
   let fuFaixa = "";        // filtro de faixa de potencial/volume ("" = todas)
+  let fuPend = "";         // filtro de pendência VSM: "" todas, "treinar", "contrato", "sem"
   let ME = null;           // usuário logado (/api/me): { username, admin, must_change, responsavel }
   let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
   let apMetric = "empresas"; // métrica ativa no painel de indicadores ao lado do mapa
@@ -190,6 +191,7 @@ const App = (() => {
       { k: "ja_vendeu", l: "Já fez venda?", type: "bool", tip: "Marque quando a empresa fechar a primeira venda de antena." },
       { k: "status", l: "Status comercial", type: "select", opts: "status", tip: "Etapa atual no funil (aguardando contato → em atendimento → … → pronto para venda). Define a cor no mapa e na lista." },
       { k: "status_vivensis", l: "Status Vivensis", type: "select", opts: "status_vivensis", tip: "Situação da revenda no portal Vivensis/VSM (credenciamento junto ao distribuidor)." },
+      { k: "id_vsm", l: "ID VSM", type: "vsm", tip: "Identificador do parceiro no VSM/Vivensis. Depois de definido não pode mais ser alterado; fica em branco (e editável) enquanto a revenda ainda não tiver credenciamento." },
       { k: "canal", l: "Canal", type: "select", opts: "canais", tip: "Por onde a empresa opera ou compra (ex.: Vivensis/VSM, venda direta, indicação)." },
       { k: "responsavel", l: "Responsável interno", type: "select", opts: "responsaveis", tip: "Pessoa da equipe interna encarregada de acompanhar esta empresa." },
       { k: "prioridade", l: "Prioridade", type: "select", opts: "prioridades", tip: "Define a urgência de atenção (alta/média/baixa). Aparece como etiqueta no Follow-up." },
@@ -215,6 +217,9 @@ const App = (() => {
     // Fecha o menu do usuário ao clicar fora; ESC / clique no fundo fecham o modal.
     document.addEventListener("click", (ev) => {
       const um = $("usermenu"); if (um && !um.contains(ev.target)) fecharUserMenu();
+      // Fecha o menu móvel ao tocar fora da barra superior.
+      const tb = ev.target.closest && ev.target.closest(".topbar");
+      if (!tb) fecharNav();
     });
     $("modal-ov").addEventListener("click", (ev) => { if (ev.target === $("modal-ov")) fecharModal(); });
     document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") fecharModal(); });
@@ -254,6 +259,21 @@ const App = (() => {
   function fecharUserMenu() {
     const p = $("usermenu-pop");
     if (p && !p.hidden) { p.hidden = true; $("userchip").setAttribute("aria-expanded", "false"); }
+  }
+  // ---- menu móvel (hamburguer) ----
+  function navToggle(ev) {
+    if (ev) ev.stopPropagation();
+    const tb = document.querySelector(".topbar"); if (!tb) return;
+    const abrir = !tb.classList.contains("nav-open");
+    tb.classList.toggle("nav-open", abrir);
+    const b = $("navtoggle"); if (b) b.setAttribute("aria-expanded", abrir ? "true" : "false");
+  }
+  function fecharNav() {
+    const tb = document.querySelector(".topbar");
+    if (tb && tb.classList.contains("nav-open")) {
+      tb.classList.remove("nav-open");
+      const b = $("navtoggle"); if (b) b.setAttribute("aria-expanded", "false");
+    }
   }
 
   // ---- modal genérico ----
@@ -1269,6 +1289,7 @@ const App = (() => {
     if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
     if (v === "gerencial") carregarGerencial();
+    fecharNav();  // fecha o menu móvel ao trocar de aba
   }
 
   // ==================== GERENCIAL (produtividade comercial) ====================
@@ -1527,6 +1548,7 @@ const App = (() => {
     else if (id === "fu-origem") fuOrigem = v;
     else if (id === "fu-vendeu") fuVendeu = v;
     else if (id === "fu-faixa") fuFaixa = v;
+    else if (id === "fu-pend") fuPend = v;
     renderFollowUp();
   }
 
@@ -1561,6 +1583,7 @@ const App = (() => {
         ${sel("fu-status", "Status", fuStatus, statuses)}
         ${sel("fu-origem", "Origem", fuOrigem, origens)}
         ${sel("fu-vendeu", "Fez venda", fuVendeu, [{ v: "1", t: "Sim" }, { v: "0", t: "Não" }])}
+        ${sel("fu-pend", "Pendência VSM", fuPend, [{ v: "treinar", t: "Falta treinar" }, { v: "contrato", t: "Falta assinar contrato" }, { v: "sem", t: "Sem pendência" }])}
         ${sel("fu-faixa", "Potencial", fuFaixa, faixas)}
       </div>`;
     const passa = (x) => {
@@ -1570,6 +1593,14 @@ const App = (() => {
       if (fuFaixa && (x.faixa_potencial || "") !== fuFaixa) return false;
       if (fuVendeu === "1" && !(x.ja_vendeu === 1 || x.ja_vendeu === true)) return false;
       if (fuVendeu === "0" && (x.ja_vendeu === 1 || x.ja_vendeu === true)) return false;
+      if (fuPend) {
+        // pendencia_vsm pode ser "Falta treinar e assinar contrato" (soma as duas);
+        // por isso o match é por trecho, não igualdade exata.
+        const p = String(x.pendencia_vsm || "").toLowerCase();
+        if (fuPend === "treinar" && !p.includes("treinar")) return false;
+        if (fuPend === "contrato" && !(p.includes("contrato") || p.includes("assinar"))) return false;
+        if (fuPend === "sem" && !(p.includes("sem pend"))) return false;
+      }
       if (fuOrigem) { const o = origemInfo(x.origem_contato); if (!o || o.label !== fuOrigem) return false; }
       return true;
     };
@@ -2119,6 +2150,14 @@ const App = (() => {
     }
     if (f.type === "textarea")
       return `<div class="fld full"><label>${f.l}${ico}</label><textarea id="${id}" rows="3">${esc(val || "")}</textarea></div>`;
+    if (f.type === "vsm") {
+      const tem = val != null && String(val).trim() !== "";
+      // Já definido → somente leitura (não pode alterar). Em branco → editável
+      // (a revenda vai receber um ID VSM no futuro, ao ser credenciada).
+      return tem
+        ? `<div class="${cls}"><label>${f.l}${ico}</label><input type="text" id="${id}" value="${esc(val)}" readonly disabled title="Definido no credenciamento — não editável." style="background:var(--soft);color:var(--muted);cursor:not-allowed"></div>`
+        : `<div class="${cls}"><label>${f.l}${ico}</label><input type="text" id="${id}" value="" placeholder="Em branco até o credenciamento"></div>`;
+    }
     const t = f.type === "num" ? "number" : f.type === "date" ? "date" : "text";
     return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}</label><input type="${t}" id="${id}" value="${esc(val ?? "")}"></div>`;
   }
@@ -2261,7 +2300,7 @@ const App = (() => {
           ${kv("Potencial", e.faixa_potencial)}${kv("Já fez venda?", e.ja_vendeu ? "Sim" : "Não")}
           ${kv("Capacidade/mês", e.capacidade_vendas_mes)}${kv("Filiais", e.qtd_filiais)}${kv("Origem", e.origem_contato)}
           ${kv("Canal", e.canal)}${kv("Responsável interno", e.responsavel)}${kv("Prioridade", e.prioridade)}
-          ${kv("Status Vivensis", e.status_vivensis)}
+          ${kv("Status Vivensis", e.status_vivensis)}${kv("ID VSM", e.id_vsm)}
         </dl></div>
 
       ${capilaridadeVSM(e)}
@@ -2310,18 +2349,15 @@ const App = (() => {
     // Gating por papel (RBAC): consulta = somente leitura; excluir empresa = só admin.
     // O backend é a autoridade — isto é apenas UX (esconder o que não pode usar).
     const consulta = !!(ME && ME.papel === "consulta");
-    const podeExcluir = !!(ME && ME.pode_excluir_empresa);
     const corpo = (!consulta && (editMode || nova)) ? formHTML(e) : viewHTML(e);
     let footer;
     if (consulta) {
       footer = `<span class="df-ro" style="color:var(--muted);font-size:13px">Perfil <b>Consulta</b> · somente leitura</span>`;
     } else if (editMode || nova) {
       footer = `<button class="btn primary" onclick="App.salvar()">Salvar</button>
-         ${nova ? "" : `<button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.verFicha()">Cancelar</button>`}
-         ${(nova || !podeExcluir) ? "" : `<button class="btn ghost danger" style="margin-left:auto" onclick="App.excluir()">Excluir</button>`}`;
+         ${nova ? "" : `<button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.verFicha()">Cancelar</button>`}`;
     } else {
-      footer = `<button class="btn primary" onclick="App.editarFicha()">Editar dados</button>
-         ${podeExcluir ? `<button class="btn ghost danger" style="margin-left:auto" onclick="App.excluir()">Excluir</button>` : ""}`;
+      footer = `<button class="btn primary" onclick="App.editarFicha()">Editar dados</button>`;
     }
     $("drawer").innerHTML = `
       <div class="dh">
@@ -2497,6 +2533,7 @@ const App = (() => {
     varreduraAgora, fuFiltrar,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
+    navToggle,
     toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,
     toggleGerencial, gerPreset, gerCustom, gerToggleColab, gerTodosColab,
     setPapel, abrirMinhasSessoes, logoutAll, abrirSeguranca, segAba, segRevogar,
