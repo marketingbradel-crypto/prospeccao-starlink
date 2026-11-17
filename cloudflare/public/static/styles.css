@@ -567,3 +567,24 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .ger-rank-bar{background:var(--soft);border-radius:999px;height:14px;overflow:hidden}
 .ger-rank-bar i{display:block;height:100%;background:var(--accent);border-radius:999px;transition:width .25s ease}
 .ger-rank-val{font-family:var(--fnum);font-size:12.5px;font-weight:700;text-align:right}
+
+/* ===================== Segurança e auditoria ===================== */
+.userlist .papel-sel{height:30px;border-radius:8px;border:1px solid var(--line);background:var(--soft);
+  color:var(--fg);font-size:12px;padding:0 6px;cursor:pointer}
+.userlist .sess-meta{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sesslist li{flex-wrap:wrap}
+.seg-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.seg-kpi{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:10px 8px;text-align:center}
+.seg-kpi b{display:block;font-family:var(--fnum);font-size:20px;color:var(--brand2);line-height:1.1}
+.seg-kpi span{font-size:11px;color:var(--muted)}
+.seg-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.seg-tabbtn{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:999px;
+  padding:5px 12px;font-size:12.5px;font-weight:600;cursor:pointer}
+.seg-tabbtn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.seg-tablewrap{max-height:50vh;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.seg-table{width:100%;border-collapse:collapse;font-size:12px}
+.seg-table th{position:sticky;top:0;background:var(--soft);text-align:left;padding:7px 9px;color:var(--muted);
+  font-weight:700;border-bottom:1px solid var(--line);white-space:nowrap}
+.seg-table td{padding:6px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+.seg-table tr:last-child td{border-bottom:0}
+.seg-table tr.bloq td{background:rgba(220,38,38,.07)}

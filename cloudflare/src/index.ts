@@ -24,7 +24,7 @@ const EMPRESA_CAMPOS = [
   "endereco", "cep", "cidade", "uf", "microrregiao", "latitude", "longitude",
   "resp_nome", "resp_cargo", "resp_telefone", "resp_whatsapp", "resp_email",
   "segmento", "produtos", "trabalha_telecom", "ja_starlink", "exp_antenas",
-  "equipe_tecnica", "loja_fisica", "qtd_filiais", "capacidade_vendas_mes",
+  "equipe_tecnica", "loja_fisica", "possui_estoque", "qtd_filiais", "capacidade_vendas_mes",
   "faixa_potencial", "ja_vendeu",
   "interesse_parceiro", "origem_contato",
   "canal", "responsavel", "prioridade", "status", "status_vivensis", "etapa",
@@ -45,7 +45,7 @@ const CAMPOS_TEXTO = new Set([
   "status_vivensis", "motivo_perda", "observacoes",
   "proxima_acao", "proxima_acao_data", "data_ultimo_contato",
 ]);
-const CAMPOS_BOOL = new Set(["trabalha_telecom", "ja_starlink", "exp_antenas", "equipe_tecnica", "loja_fisica", "ja_vendeu"]);
+const CAMPOS_BOOL = new Set(["trabalha_telecom", "ja_starlink", "exp_antenas", "equipe_tecnica", "loja_fisica", "possui_estoque", "ja_vendeu"]);
 const CAMPOS_INT = new Set(["qtd_filiais", "ativacoes_mes", "ativacoes_acum"]);
 const CAMPOS_FLOAT = new Set(["latitude", "longitude"]);
 
@@ -54,17 +54,27 @@ type Row = Record<string, any>;
 // --------------------------------------------------------------------------
 // Utilitarios
 // --------------------------------------------------------------------------
-function agora(): string {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).format(new Date());
-}
+const FMT_TS = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+});
+const FMT_DIA = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+});
+// Carimbo "YYYY-MM-DD HH:MM:SS" em horario de Brasilia para uma data qualquer.
+function agoraDe(d: Date): string { return FMT_TS.format(d); }
+function agora(): string { return FMT_TS.format(new Date()); }
+function hoje(): string { return FMT_DIA.format(new Date()); }
 
-function hoje(): string {
-  return new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
-  }).format(new Date());
+// Carimbo N segundos no futuro (p/ expiracao de sessao / bloqueio de login).
+function agoraMais(segundos: number): string { return FMT_TS.format(new Date(Date.now() + segundos * 1000)); }
+
+// Converte "YYYY-MM-DD HH:MM:SS" (Brasilia, UTC-3 fixo desde 2019) em epoch ms.
+// Comparacoes de validade/expiracao usam isto; strings do mesmo formato tambem
+// podem ser comparadas lexicograficamente (formato sortavel sv-SE).
+function tsEpoch(s: any): number {
+  const t = Date.parse(String(s ?? "").trim().replace(" ", "T") + "-03:00");
+  return Number.isFinite(t) ? t : 0;
 }
 
 // Extrai o mes "YYYY-MM" de uma data "YYYY-MM-DD..." (ou null se invalida).
@@ -254,22 +264,29 @@ type Aud = {
   campo?: string | null;
   antes?: string | null;
   depois?: string | null;
-  origem?: string; // 'humano' (default) | 'sistema'
-  usuario?: string | null; // sobrescreve o login (ex.: cron sem usuario)
+  origem?: string; // 'humano' (default) | 'sistema' | 'seguranca'
+  usuario?: string | null; // sobrescreve o login (ex.: cron sem usuario, ou login)
+  ip?: string | null;      // sobrescreve o IP (ex.: tentativa de login falha)
 };
 async function registrarAuditoria(c: any, a: Aud): Promise<void> {
   try {
     const quem = a.usuario !== undefined ? a.usuario : (c.get("usuario")?.username ?? null);
+    const ip = a.ip !== undefined ? a.ip : (ipDe(c) || null);
     await c.env.DB.prepare(
-      "INSERT INTO auditoria (ts,dia,usuario,acao,empresa_id,empresa_nome,alvo_id,campo,valor_antes,valor_depois,origem) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+      "INSERT INTO auditoria (ts,dia,usuario,acao,empresa_id,empresa_nome,alvo_id,campo,valor_antes,valor_depois,origem,ip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
     ).bind(
       agora(), hoje(), quem, a.acao,
       a.empresa_id ?? null, a.empresa_nome ?? null, a.alvo_id ?? null,
-      a.campo ?? null, a.antes ?? null, a.depois ?? null, a.origem ?? "humano"
+      a.campo ?? null, a.antes ?? null, a.depois ?? null, a.origem ?? "humano", ip
     ).run();
   } catch (_e) {
     // log best-effort: um erro aqui nao pode derrubar o POST/PUT/PATCH original.
   }
+}
+// Evento de seguranca (login/logout/permissao/export/sessao). origem='seguranca'
+// nunca conta como produtividade humana (ACOES_PRODUTIVIDADE e uma allowlist).
+async function logSeguranca(c: any, acao: string, extra: Partial<Aud> = {}): Promise<void> {
+  await registrarAuditoria(c, { acao, origem: "seguranca", ...extra });
 }
 
 // --------------------------------------------------------------------------
@@ -330,9 +347,26 @@ function creds(env: Env) {
   return { user: env.APP_USER || "bradel", pass: env.APP_PASSWORD || "" };
 }
 
-// Pessoa autenticada. `env` = superadmin do secret (bradel). `admin` so o env tem.
+// Papeis do RBAC (3 niveis enxutos). O superadmin do env e sempre 'admin'.
+//  admin    — tudo (inclui excluir empresa e gerenciar usuarios/seguranca).
+//  operador — cria e edita (empresas, contatos, filiais, prospeccao, import/export);
+//             NAO exclui empresa nem gerencia usuarios.
+//  consulta — somente leitura: qualquer escrita retorna 403.
+type Papel = "admin" | "operador" | "consulta";
+const PAPEIS: Papel[] = ["admin", "operador", "consulta"];
+function normPapel(p: any): Papel {
+  const s = String(p ?? "").trim().toLowerCase();
+  return (PAPEIS as string[]).includes(s) ? (s as Papel) : "operador";
+}
+
+// Pessoa autenticada. `env` = superadmin do secret (bradel). `admin` = papel admin.
 // `mustChange` = entrou pela senha padrao e ainda precisa definir a senha pessoal.
-type Usuario = { username: string; admin: boolean; mustChange: boolean; env?: boolean };
+// `sid` = id da sessao no D1 (ausente no acesso via Basic Auth de integracao).
+type Usuario = { username: string; papel: Papel; admin: boolean; mustChange: boolean; env?: boolean; sid?: string };
+
+// Autorizacao por papel (verificada SEMPRE no servidor — §2 do brief).
+function podeEscrever(u: Usuario | null | undefined): boolean { return !!u && (u.papel === "admin" || u.papel === "operador"); }
+function ehAdminPapel(u: Usuario | null | undefined): boolean { return !!u && u.papel === "admin"; }
 
 // ---- hashing de senha (PBKDF2-SHA256, so WebCrypto) ----
 function hexDe(buf: ArrayBuffer | Uint8Array): string {
@@ -364,24 +398,98 @@ async function conferirSenha(senha: string, hashHex: string, saltHex: string): P
   return igualConstante(hash, hashHex);
 }
 
-// ---- sessao assinada: o cookie carrega o login + HMAC(APP_PASSWORD) ----
-async function assinar(env: Env, login: string): Promise<string> {
+// Escapa texto para interpolacao segura em HTML (previne XSS refletido).
+function escapeHtml(s: any): string {
+  return String(s ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch] as string));
+}
+
+// ---- sessoes revogaveis no D1 ----
+// O cookie carrega "<sid>.<HMAC(APP_PASSWORD, 'psl-sess-v2|'+sid)>". O HMAC
+// rejeita cookies forjados/alterados sem tocar no banco; a validade real (nao
+// revogada, dentro da inatividade/expiracao) e conferida no D1.
+const SESSAO_INATIVIDADE_SEG = 8 * 60 * 60;   // expira apos 8h sem atividade
+const SESSAO_ABSOLUTA_SEG = 30 * 24 * 60 * 60; // validade maxima 30 dias
+const SESSAO_TOUCH_SEG = 120;                  // so regrava ultima_atividade a cada 2 min
+
+// Assina um sid com HMAC(APP_PASSWORD) — detecta adulteracao do cookie.
+async function assinarSid(env: Env, sid: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw", te.encode(env.APP_PASSWORD || ""), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", key, te.encode("psl-sess-v1|" + login));
+  const sig = await crypto.subtle.sign("HMAC", key, te.encode("psl-sess-v2|" + sid));
   return hexDe(sig);
 }
-async function sessaoToken(env: Env, login: string): Promise<string> {
-  return encodeURIComponent(login) + "." + (await assinar(env, login));
+async function cookieDaSessao(env: Env, sid: string): Promise<string> {
+  return sid + "." + (await assinarSid(env, sid));
 }
-async function loginDoCookie(env: Env, raw: string | null): Promise<string | null> {
+// Extrai o sid de um cookie bem-assinado (null se ausente/forjado/formato antigo).
+async function sidDoCookie(env: Env, raw: string | null): Promise<string | null> {
   if (!raw) return null;
   const i = raw.lastIndexOf(".");
   if (i <= 0) return null;
-  let login: string;
-  try { login = decodeURIComponent(raw.slice(0, i)); } catch { return null; }
-  const esperado = await assinar(env, login);
-  return igualConstante(raw.slice(i + 1), esperado) ? login : null;
+  const sid = raw.slice(0, i);
+  if (!/^[0-9a-f]{32,128}$/.test(sid)) return null;
+  const esperado = await assinarSid(env, sid);
+  return igualConstante(raw.slice(i + 1), esperado) ? sid : null;
+}
+
+// Cria uma sessao e devolve o id (hex 256 bits). Registra IP/User-Agent.
+async function criarSessao(env: Env, username: string, ip: string, ua: string): Promise<string> {
+  const sid = hexDe(crypto.getRandomValues(new Uint8Array(32)));
+  await env.DB.prepare(
+    "INSERT INTO sessoes (id,usuario,criado_em,ultima_atividade,expira_em,ip,user_agent,revogada) VALUES (?,?,?,?,?,?,?,0)"
+  ).bind(sid, username, agora(), agora(), agoraMais(SESSAO_ABSOLUTA_SEG), ip || null, (ua || "").slice(0, 300)).run();
+  return sid;
+}
+// Valida a sessao: existe, nao revogada, dentro da expiracao absoluta e da
+// inatividade. Renova ultima_atividade (throttled). Retorna o username ou null.
+async function validarSessao(env: Env, sid: string): Promise<string | null> {
+  const r = await env.DB.prepare(
+    "SELECT usuario,ultima_atividade,expira_em,revogada FROM sessoes WHERE id=?").bind(sid).first<Row>();
+  if (!r || Number(r.revogada)) return null;
+  const nowMs = Date.now();
+  if (tsEpoch(r.expira_em) && nowMs > tsEpoch(r.expira_em)) return null;                 // expiracao absoluta
+  if (nowMs - tsEpoch(r.ultima_atividade) > SESSAO_INATIVIDADE_SEG * 1000) return null;  // inatividade
+  if (nowMs - tsEpoch(r.ultima_atividade) > SESSAO_TOUCH_SEG * 1000) {
+    await env.DB.prepare("UPDATE sessoes SET ultima_atividade=? WHERE id=?").bind(agora(), sid).run();
+  }
+  return String(r.usuario);
+}
+async function revogarSessao(env: Env, sid: string): Promise<void> {
+  await env.DB.prepare("UPDATE sessoes SET revogada=1 WHERE id=?").bind(sid).run();
+}
+async function revogarSessoesDoUsuario(env: Env, username: string, exceto?: string): Promise<number> {
+  const res = exceto
+    ? await env.DB.prepare("UPDATE sessoes SET revogada=1 WHERE usuario=? AND revogada=0 AND id<>?").bind(username, exceto).run()
+    : await env.DB.prepare("UPDATE sessoes SET revogada=1 WHERE usuario=? AND revogada=0").bind(username).run();
+  return Number((res as any)?.meta?.changes || 0);
+}
+
+// ---- brute-force / credential stuffing no /login ----
+const BF_MAX_TENTATIVAS = 5;          // falhas antes de bloquear
+const BF_BLOQUEIO_SEG = 15 * 60;      // duracao do bloqueio (15 min)
+function ipDe(c: any): string { return c.req.header("CF-Connecting-IP") || c.req.header("X-Forwarded-For") || ""; }
+function chaveBF(username: string, ip: string): string { return `${username}|${ip}`; }
+
+// Esta chave esta bloqueada agora? Retorna segundos restantes (0 = liberado).
+async function loginBloqueado(env: Env, chave: string): Promise<number> {
+  const r = await env.DB.prepare("SELECT bloqueado_ate FROM login_tentativas WHERE chave=?").bind(chave).first<Row>();
+  if (!r || !r.bloqueado_ate) return 0;
+  const restante = tsEpoch(r.bloqueado_ate) - Date.now();
+  return restante > 0 ? Math.ceil(restante / 1000) : 0;
+}
+// Registra uma falha; ao atingir o limite, aplica bloqueio temporario.
+async function registrarFalhaLogin(env: Env, chave: string): Promise<void> {
+  const r = await env.DB.prepare("SELECT tentativas FROM login_tentativas WHERE chave=?").bind(chave).first<Row>();
+  const n = (r ? Number(r.tentativas) : 0) + 1;
+  const bloq = n >= BF_MAX_TENTATIVAS ? agoraMais(BF_BLOQUEIO_SEG) : null;
+  await env.DB.prepare(
+    `INSERT INTO login_tentativas (chave,tentativas,bloqueado_ate,atualizado_em) VALUES (?,?,?,?)
+     ON CONFLICT(chave) DO UPDATE SET tentativas=excluded.tentativas, bloqueado_ate=excluded.bloqueado_ate, atualizado_em=excluded.atualizado_em`
+  ).bind(chave, n >= BF_MAX_TENTATIVAS ? 0 : n, bloq, agora()).run();
+}
+async function limparFalhasLogin(env: Env, chave: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM login_tentativas WHERE chave=?").bind(chave).run();
 }
 
 // username valido: minusculo, sem acento/espaco. Ex.: "leandro", "luiscarlos".
@@ -391,7 +499,7 @@ function normUser(s: any): string { return String(s ?? "").trim().toLowerCase();
 // O login do env (APP_USER/APP_PASSWORD) e o superadmin permanente: nunca fica sem
 // acesso e e o unico "admin" (gerencia os demais). Nao vive na tabela usuarios.
 function envAdmin(env: Env): Usuario {
-  return { username: creds(env).user, admin: true, mustChange: false, env: true };
+  return { username: creds(env).user, papel: "admin", admin: true, mustChange: false, env: true };
 }
 // Autentica username+senha no /login. Acesso RESTRITO: so entra quem o admin
 // (bradel) cadastrou previamente. Fluxo da equipe:
@@ -406,17 +514,19 @@ async function autenticar(env: Env, username: string, senha: string): Promise<Us
   if (username === user) return pass && senha === pass ? envAdmin(env) : null;
   if (!RE_USERNAME.test(username)) return null;
   const r = await env.DB.prepare(
-    "SELECT senha_hash,salt,must_change FROM usuarios WHERE username=?").bind(username).first<Row>();
+    "SELECT senha_hash,salt,must_change,papel FROM usuarios WHERE username=?").bind(username).first<Row>();
   // Acesso restrito: so entra quem o admin cadastrou (tem linha na tabela).
   if (!r) return null;
+  const papel = normPapel(r.papel);
+  const admin = papel === "admin";
   // Com senha pessoal definida (must_change=0): confere o hash.
   if (!Number(r.must_change)) {
     return (await conferirSenha(senha, String(r.senha_hash), String(r.salt)))
-      ? { username, admin: false, mustChange: false } : null;
+      ? { username, papel, admin, mustChange: false } : null;
   }
   // Linha pendente de troca (1o acesso ou reset): aceita a senha padrao.
   const padrao = env.APP_DEFAULT_PASSWORD || "";
-  if (padrao && senha === padrao) return { username, admin: false, mustChange: true };
+  if (padrao && senha === padrao) return { username, papel, admin, mustChange: true };
   return null;
 }
 // Resolve o usuario de um cookie ja assinado (login confiavel). Retorna null se o
@@ -424,9 +534,10 @@ async function autenticar(env: Env, username: string, senha: string): Promise<Us
 async function carregarUsuario(env: Env, username: string): Promise<Usuario | null> {
   if (username === creds(env).user) return envAdmin(env);
   const r = await env.DB.prepare(
-    "SELECT must_change FROM usuarios WHERE username=?").bind(username).first<Row>();
+    "SELECT must_change,papel FROM usuarios WHERE username=?").bind(username).first<Row>();
   if (!r) return null;
-  return { username, admin: false, mustChange: !!Number(r.must_change) };
+  const papel = normPapel(r.papel);
+  return { username, papel, admin: papel === "admin", mustChange: !!Number(r.must_change) };
 }
 
 function getCookie(c: any, name: string): string | null {
@@ -484,7 +595,7 @@ input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,2
   <p class="sub">Bradel · acesso restrito</p>
   ${msg}
   <label for="u">Usuário</label>
-  <input id="u" name="user" value="${user}" placeholder="seu usuário" autocomplete="username" autocapitalize="none" autofocus spellcheck="false">
+  <input id="u" name="user" value="${escapeHtml(user)}" placeholder="seu usuário" autocomplete="username" autocapitalize="none" autofocus spellcheck="false">
   <label for="pw">Senha</label>
   <div class="pw">
     <input id="pw" name="pass" type="password" autocomplete="current-password" required>
@@ -511,8 +622,49 @@ function tg(){
 
 const app = new Hono<{ Bindings: Env; Variables: { usuario: Usuario } }>();
 
-// Middleware de login: tela propria + cookie assinado (carrega o username);
-// a API tambem aceita Basic. O usuario autenticado fica em c.get("usuario").
+// Content-Security-Policy. A SPA usa só assets locais (sem CDNs externos), mas
+// depende de handlers inline (onclick=) e style="" — por isso 'unsafe-inline' em
+// script/style. frame-ancestors 'none' + X-Frame-Options barram clickjacking;
+// connect-src 'self' impede exfiltracao p/ terceiros. Endurecer para nonces é
+// um passo futuro (exigiria tirar os onclick inline do HTML).
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join("; ");
+const SEC_HEADERS: Record<string, string> = {
+  "Content-Security-Policy": CSP,
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+  "Cross-Origin-Opener-Policy": "same-origin",
+};
+// Cabecalhos de seguranca em TODA resposta (inclui assets e erros). Reconstrói a
+// resposta porque os headers de respostas de assets (fetch) sao imutaveis.
+app.use("*", async (c, next) => {
+  await next();
+  try {
+    const res = c.res;
+    const headers = new Headers(res.headers);
+    for (const [k, v] of Object.entries(SEC_HEADERS)) headers.set(k, v);
+    c.res = new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  } catch { /* não quebra a resposta se algo der errado */ }
+});
+
+const COOKIE_ATTRS = "HttpOnly; Secure; SameSite=Lax; Path=/";
+
+// Middleware de login: tela propria + cookie de SESSAO (sid no D1, revogavel,
+// com expiracao por inatividade); a API tambem aceita Basic. O usuario
+// autenticado fica em c.get("usuario").
 app.use("*", async (c, next) => {
   const env = c.env;
   if (!env.APP_PASSWORD) return c.text("Login não configurado (defina o secret APP_PASSWORD).", 503);
@@ -521,30 +673,78 @@ app.use("*", async (c, next) => {
   if (path === "/login") {
     if (c.req.method === "POST") {
       const body = await c.req.parseBody();
+      const user = normUser(body.user ?? "");
+      const ip = ipDe(c);
+      const chave = chaveBF(user, ip);
+      // Brute-force / credential stuffing: bloqueio temporario apos N falhas.
+      const espera = await loginBloqueado(env, chave);
+      if (espera > 0) {
+        await logSeguranca(c, "login_bloqueado", { usuario: user || null, ip: ip || null, depois: `${espera}s restantes` });
+        return c.html(loginPage(`Muitas tentativas. Tente novamente em ${Math.ceil(espera / 60)} min.`, String(body.user ?? "").trim()), 429);
+      }
       const u = await autenticar(env, String(body.user ?? ""), String(body.pass ?? ""));
       if (u) {
-        c.header("Set-Cookie",
-          `${COOKIE}=${await sessaoToken(env, u.username)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`);
+        await limparFalhasLogin(env, chave);
+        const sid = await criarSessao(env, u.username, ip, c.req.header("User-Agent") || "");
+        c.header("Set-Cookie", `${COOKIE}=${await cookieDaSessao(env, sid)}; ${COOKIE_ATTRS}; Max-Age=${SESSAO_ABSOLUTA_SEG}`);
+        await logSeguranca(c, "login_ok", { usuario: u.username, ip: ip || null });
         return c.redirect("/", 302);
       }
+      await registrarFalhaLogin(env, chave);
+      await logSeguranca(c, "login_falha", { usuario: user || null, ip: ip || null });
       return c.html(loginPage("Usuário ou senha incorretos.", String(body.user ?? "").trim()), 401);
     }
     return c.html(loginPage());
   }
   if (path === "/logout") {
-    c.header("Set-Cookie", `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`);
+    const sid = await sidDoCookie(env, getCookie(c, COOKIE));
+    if (sid) {
+      const quem = await validarSessao(env, sid);
+      await revogarSessao(env, sid);
+      if (quem) await logSeguranca(c, "logout", { usuario: quem });
+    }
+    c.header("Set-Cookie", `${COOKIE}=; ${COOKIE_ATTRS}; Max-Age=0`);
     return c.redirect("/login", 302);
   }
 
-  // Assets estaticos: basta o cookie estar assinado (sem toque no banco).
+  // Assets estaticos: basta o cookie estar bem-assinado (sem toque no banco).
+  // Paginas e API fazem a validacao completa da sessao (revogacao/inatividade).
   const ehAsset = path.startsWith("/static/") || path === "/favicon.ico";
-  const login = await loginDoCookie(env, getCookie(c, COOKIE));
+  const sid = await sidDoCookie(env, getCookie(c, COOKIE));
   let usuario: Usuario | null = null;
-  if (login) usuario = ehAsset ? { username: login, admin: false, mustChange: false } : await carregarUsuario(env, login);
+  if (sid) {
+    if (ehAsset) {
+      usuario = { username: "", papel: "consulta", admin: false, mustChange: false, sid };
+    } else {
+      const login = await validarSessao(env, sid);
+      if (login) {
+        usuario = await carregarUsuario(env, login);
+        if (usuario) usuario.sid = sid;
+      }
+    }
+  }
   if (!usuario) usuario = await usuarioBasic(c);
   if (usuario) { c.set("usuario", usuario); return next(); }
   if (path.startsWith("/api/")) return c.json({ erro: "Não autenticado." }, 401);
   return c.redirect("/login", 302);
+});
+
+// RBAC — autorizacao por papel em TODA a API de escrita (verificacao no servidor,
+// §2 do brief). GET/HEAD: qualquer autenticado. Escrita: 'operador'+ (consulta
+// bloqueada). Rotas self-service (/api/me/*) e admin especificas sao tratadas
+// aqui ou no proprio handler (DELETE empresa e /api/usuarios exigem admin).
+app.use("/api/*", async (c, next) => {
+  const m = c.req.method.toUpperCase();
+  if (m === "GET" || m === "HEAD" || m === "OPTIONS") return next();
+  const u = c.get("usuario");
+  const path = new URL(c.req.url).pathname;
+  // Self-service: trocar a propria senha / gerenciar as proprias sessoes — liberado
+  // a qualquer autenticado (inclusive consulta), para nao travar o 1º acesso.
+  if (path.startsWith("/api/me/")) return next();
+  if (!podeEscrever(u)) {
+    return c.json({ erro: "Seu perfil é somente leitura (Consulta). Ação não permitida." }, 403);
+  }
+  return next();
 });
 
 async function jsonBody(c: any): Promise<Row> {
@@ -667,6 +867,8 @@ app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
 });
 
 app.delete("/api/empresas/:eid{[0-9]+}", async (c) => {
+  // Exclusao de empresa e irreversivel — restrita ao admin (operador nao exclui).
+  if (!ehAdminPapel(c.get("usuario"))) return c.json({ erro: "Apenas o administrador pode excluir empresas." }, 403);
   const eid = Number(c.req.param("eid"));
   const emp = await c.env.DB.prepare("SELECT razao_social,nome_fantasia FROM empresas WHERE id=?").bind(eid).first<Row>();
   await c.env.DB.prepare("DELETE FROM empresas WHERE id=?").bind(eid).run();
@@ -770,7 +972,34 @@ app.get("/api/me", async (c) => {
   const responsavel = L.responsavelDoLogin(u.username);
   // Permissao de acesso gerencial: admin do env sempre tem; os demais so se liberados.
   const perm_gerencial = await temPermGerencial(c, u);
-  return c.json({ username: u.username, admin: u.admin, env: !!u.env, must_change: u.mustChange, responsavel, perm_gerencial });
+  return c.json({
+    username: u.username, papel: u.papel, admin: u.admin, env: !!u.env,
+    must_change: u.mustChange, responsavel, perm_gerencial,
+    // Flags de capacidade p/ a UI esconder botoes (defesa secundaria; o backend decide).
+    pode_escrever: podeEscrever(u), pode_excluir_empresa: ehAdminPapel(u),
+  });
+});
+
+// Minhas sessoes ativas (dispositivos). A sessao atual vem marcada.
+app.get("/api/me/sessoes", async (c) => {
+  const u = c.get("usuario");
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, criado_em, ultima_atividade, ip, user_agent FROM sessoes
+      WHERE usuario=? AND revogada=0 AND expira_em > ? ORDER BY ultima_atividade DESC`
+  ).bind(u.username, agora()).all<Row>();
+  const lista = (results ?? []).map((r) => ({
+    atual: r.id === u.sid, criado_em: r.criado_em, ultima_atividade: r.ultima_atividade,
+    ip: r.ip ?? "", user_agent: r.user_agent ?? "",
+  }));
+  return c.json(lista);
+});
+
+// Encerrar todas as outras sessoes (mantem a atual). "Sair de todos os dispositivos".
+app.post("/api/me/logout-all", async (c) => {
+  const u = c.get("usuario");
+  const n = await revogarSessoesDoUsuario(c.env, u.username, u.sid);
+  await logSeguranca(c, "logout_all", { depois: `${n} sessão(ões) encerrada(s)` });
+  return c.json({ ok: true, encerradas: n });
 });
 
 // Define/troca a senha pessoal. No 1o acesso (mustChange) nao pede a senha atual;
@@ -803,6 +1032,9 @@ app.post("/api/me/senha", async (c) => {
       "INSERT INTO usuarios (username,senha_hash,salt,must_change,criado_em) VALUES (?,?,?,0,?)")
       .bind(u.username, hash, salt, agora()).run();
   }
+  // Trocar a senha encerra as OUTRAS sessoes (mitiga sessao sequestrada/compartilhada).
+  await revogarSessoesDoUsuario(c.env, u.username, u.sid);
+  await logSeguranca(c, "senha_alterada", { usuario: u.username });
   return c.json({ ok: true });
 });
 
@@ -823,8 +1055,24 @@ async function temPermGerencial(c: any, u?: Usuario): Promise<boolean> {
 app.get("/api/usuarios", async (c) => {
   if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
   const { results } = await c.env.DB.prepare(
-    "SELECT username,must_change,perm_gerencial,criado_em,atualizado_em FROM usuarios ORDER BY username COLLATE NOCASE").all<Row>();
-  return c.json(results ?? []);
+    "SELECT username,papel,must_change,perm_gerencial,criado_em,atualizado_em FROM usuarios ORDER BY username COLLATE NOCASE").all<Row>();
+  return c.json((results ?? []).map((r) => ({ ...r, papel: normPapel(r.papel) })));
+});
+
+// Define o papel (RBAC) de um usuario: admin | operador | consulta (so o admin).
+app.post("/api/usuarios/:username/papel", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const username = normUser(c.req.param("username"));
+  if (username === creds(c.env).user) return c.json({ erro: "O administrador do sistema não tem o papel alterado por aqui." }, 400);
+  const r = await c.env.DB.prepare("SELECT papel FROM usuarios WHERE username=?").bind(username).first<Row>();
+  if (!r) return c.json({ erro: "Usuário não encontrado." }, 404);
+  const d = await jsonBody(c);
+  const papel = String(d.papel ?? "").trim().toLowerCase();
+  if (!(PAPEIS as string[]).includes(papel)) return c.json({ erro: "Papel inválido (admin, operador ou consulta)." }, 400);
+  const antes = normPapel(r.papel);
+  await c.env.DB.prepare("UPDATE usuarios SET papel=?, atualizado_em=? WHERE username=?").bind(papel, agora(), username).run();
+  await logSeguranca(c, "papel_alterado", { alvo_id: null, campo: username, antes, depois: papel });
+  return c.json({ ok: true, papel });
 });
 
 // Liberar/remover o acesso gerencial de um usuario (somente o admin). Nao mexe
@@ -838,6 +1086,7 @@ app.post("/api/usuarios/:username/gerencial", async (c) => {
   const ativo = toBoolInt(d.ativo);
   await c.env.DB.prepare("UPDATE usuarios SET perm_gerencial=?, atualizado_em=? WHERE username=?")
     .bind(ativo, agora(), username).run();
+  await logSeguranca(c, "perm_gerencial", { campo: username, depois: ativo ? "liberado" : "removido" });
   return c.json({ ok: true, perm_gerencial: !!ativo });
 });
 
@@ -852,13 +1101,15 @@ app.post("/api/usuarios", async (c) => {
   const existe = await c.env.DB.prepare("SELECT username FROM usuarios WHERE username=?").bind(username).first();
   if (existe) return c.json({ erro: "Esse usuário já existe." }, 400);
   if (!(c.env.APP_DEFAULT_PASSWORD || "")) return c.json({ erro: "Defina o secret APP_DEFAULT_PASSWORD para liberar o 1º acesso." }, 400);
+  const papel = (PAPEIS as string[]).includes(String(d.papel ?? "").toLowerCase()) ? String(d.papel).toLowerCase() : "operador";
   // Placeholder de hash (nunca confere): a pessoa entra pela senha padrao (sem linha-util
   // ate ela trocar). Guardamos must_change=1 so para listar quem esta pendente.
   const { hash, salt } = await hashSenha(crypto.randomUUID());
   await c.env.DB.prepare(
-    "INSERT INTO usuarios (username,senha_hash,salt,must_change,criado_em) VALUES (?,?,?,1,?)")
-    .bind(username, hash, salt, agora()).run();
-  return c.json({ ok: true, senha_padrao: true }, 201);
+    "INSERT INTO usuarios (username,senha_hash,salt,must_change,papel,criado_em) VALUES (?,?,?,1,?,?)")
+    .bind(username, hash, salt, papel, agora()).run();
+  await logSeguranca(c, "usuario_novo", { campo: username, depois: papel });
+  return c.json({ ok: true, senha_padrao: true, papel }, 201);
 });
 
 // Resetar senha = forcar nova troca. Mantem a linha mas marca must_change=1 e troca o
@@ -872,13 +1123,108 @@ app.post("/api/usuarios/:username/reset", async (c) => {
   await c.env.DB.prepare(
     "UPDATE usuarios SET senha_hash=?, salt=?, must_change=1, atualizado_em=? WHERE username=?")
     .bind(hash, salt, agora(), username).run();
+  // Reset derruba as sessoes ativas do usuario (ele volta pela senha padrao).
+  await revogarSessoesDoUsuario(c.env, username);
+  await logSeguranca(c, "usuario_reset", { campo: username });
   return c.json({ ok: true });
 });
 
 app.delete("/api/usuarios/:username", async (c) => {
   if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
-  await c.env.DB.prepare("DELETE FROM usuarios WHERE username=?").bind(normUser(c.req.param("username"))).run();
+  const username = normUser(c.req.param("username"));
+  await c.env.DB.prepare("DELETE FROM usuarios WHERE username=?").bind(username).run();
+  // Remover o cadastro encerra qualquer sessao ativa dele imediatamente.
+  await revogarSessoesDoUsuario(c.env, username);
+  await logSeguranca(c, "usuario_remove", { campo: username });
   return c.json({ ok: true });
+});
+
+// --------------------------------------------------------------------------
+// SEGURANCA E AUDITORIA — area restrita ao admin (§9 do brief).
+// Sessoes ativas, historico de acessos, tentativas de login e revogacao.
+// --------------------------------------------------------------------------
+const ACOES_SEGURANCA_LABEL: Record<string, string> = {
+  login_ok: "Login", login_falha: "Login falhou", login_bloqueado: "Login bloqueado (brute-force)",
+  logout: "Logout", logout_all: "Encerrou outras sessões", senha_alterada: "Trocou a própria senha",
+  usuario_novo: "Criou usuário", usuario_reset: "Resetou senha de usuário", usuario_remove: "Removeu usuário",
+  papel_alterado: "Alterou papel (RBAC)", perm_gerencial: "Alterou acesso gerencial",
+  sessao_revogada: "Revogou sessão", export: "Exportou dados",
+};
+
+// Todas as sessoes ativas (todos os usuarios) — para a lista de "usuários/sessões".
+app.get("/api/seguranca/sessoes", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, usuario, criado_em, ultima_atividade, ip, user_agent FROM sessoes
+      WHERE revogada=0 AND expira_em > ? ORDER BY ultima_atividade DESC LIMIT 500`
+  ).bind(agora()).all<Row>();
+  const atual = c.get("usuario")?.sid;
+  return c.json((results ?? []).map((r) => ({
+    id: r.id, atual: r.id === atual, usuario: r.usuario, criado_em: r.criado_em,
+    ultima_atividade: r.ultima_atividade, ip: r.ip ?? "", user_agent: r.user_agent ?? "",
+  })));
+});
+
+// Revoga uma sessao (por id) ou todas de um usuario (por usuario). Admin.
+app.post("/api/seguranca/sessoes/revogar", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const d = await jsonBody(c);
+  if (d.id) {
+    const sid = String(d.id);
+    const r = await c.env.DB.prepare("SELECT usuario FROM sessoes WHERE id=?").bind(sid).first<Row>();
+    await revogarSessao(c.env, sid);
+    await logSeguranca(c, "sessao_revogada", { campo: r ? String(r.usuario) : null, depois: "1 sessão" });
+    return c.json({ ok: true, encerradas: 1 });
+  }
+  const usuario = normUser(d.usuario);
+  if (!usuario) return c.json({ erro: "Informe id ou usuario." }, 400);
+  const n = await revogarSessoesDoUsuario(c.env, usuario);
+  await logSeguranca(c, "sessao_revogada", { campo: usuario, depois: `${n} sessão(ões)` });
+  return c.json({ ok: true, encerradas: n });
+});
+
+// Historico de acessos e eventos de seguranca (login/logout/falhas/permissoes).
+app.get("/api/seguranca/acessos", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  let limit = toInt(c.req.query("limit"), 200);
+  if (limit <= 0 || limit > 1000) limit = 200;
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, ts, usuario, acao, campo, valor_antes, valor_depois, ip FROM auditoria
+      WHERE origem='seguranca' ORDER BY id DESC LIMIT ?`
+  ).bind(limit).all<Row>();
+  return c.json((results ?? []).map((r) => ({ ...r, acao_label: ACOES_SEGURANCA_LABEL[String(r.acao)] ?? r.acao })));
+});
+
+// Tentativas de login em andamento / bloqueios ativos.
+app.get("/api/seguranca/tentativas", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const { results } = await c.env.DB.prepare(
+    "SELECT chave, tentativas, bloqueado_ate, atualizado_em FROM login_tentativas ORDER BY atualizado_em DESC LIMIT 200"
+  ).all<Row>();
+  const nowStr = agora();
+  return c.json((results ?? []).map((r) => {
+    const [usuario, ip] = String(r.chave).split("|");
+    return {
+      usuario, ip, tentativas: Number(r.tentativas) || 0,
+      bloqueado: !!(r.bloqueado_ate && String(r.bloqueado_ate) > nowStr),
+      bloqueado_ate: r.bloqueado_ate ?? null, atualizado_em: r.atualizado_em,
+    };
+  }));
+});
+
+// Resumo para o cabecalho do painel de seguranca.
+app.get("/api/seguranca/resumo", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const nowStr = agora();
+  const sess = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM sessoes WHERE revogada=0 AND expira_em > ?").bind(nowStr).first<Row>();
+  const users = await c.env.DB.prepare("SELECT COUNT(DISTINCT usuario) AS n FROM sessoes WHERE revogada=0 AND expira_em > ?").bind(nowStr).first<Row>();
+  const bloq = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM login_tentativas WHERE bloqueado_ate IS NOT NULL AND bloqueado_ate > ?").bind(nowStr).first<Row>();
+  const falhas = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM auditoria WHERE origem='seguranca' AND acao='login_falha' AND dia=?").bind(hoje()).first<Row>();
+  return c.json({
+    sessoes_ativas: Number(sess?.n) || 0, usuarios_online: Number(users?.n) || 0,
+    bloqueios_ativos: Number(bloq?.n) || 0, falhas_hoje: Number(falhas?.n) || 0,
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -982,21 +1328,36 @@ app.get("/api/gerencial/atividades", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT id, ts, dia, usuario, acao, empresa_id, empresa_nome, alvo_id, campo, valor_antes, valor_depois, origem
        FROM auditoria
-      WHERE dia BETWEEN ? AND ?${filtroUser}
+      WHERE dia BETWEEN ? AND ? AND origem<>'seguranca'${filtroUser}
       ORDER BY id DESC LIMIT ?`
   ).bind(...params).all<Row>();
   return c.json(results ?? []);
 });
 
-// Colaboradores presentes na auditoria (para povoar o filtro).
+// Colaboradores para povoar o filtro: todos os usuarios cadastrados + o admin,
+// unidos a quem ja tem historico na auditoria. So para ter a caixa de selecao
+// (independe de ter atividade). Exclui nomes fixos que nao entram no filtro.
+const COLAB_EXCLUIR = new Set(["jossy", "romulo"]);
 app.get("/api/gerencial/colaboradores", async (c) => {
   if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso gerencial." }, 403);
   const { results } = await c.env.DB.prepare(
-    `SELECT DISTINCT usuario FROM auditoria
-      WHERE origem='humano' AND usuario IS NOT NULL AND TRIM(usuario)<>''
-      ORDER BY usuario COLLATE NOCASE`
+    `SELECT usuario FROM (
+       SELECT username AS usuario FROM usuarios
+       UNION
+       SELECT usuario FROM auditoria
+         WHERE origem='humano' AND usuario IS NOT NULL AND TRIM(usuario)<>''
+     )`
   ).all<Row>();
-  return c.json((results ?? []).map((r) => String(r.usuario)));
+  const nomes = new Set<string>();
+  for (const r of results ?? []) {
+    const u = String(r.usuario ?? "").trim();
+    if (u) nomes.add(u);
+  }
+  nomes.add(creds(c.env).user); // garante o admin (bradel) na lista
+  const lista = [...nomes]
+    .filter((u) => !COLAB_EXCLUIR.has(u.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b, "pt-BR", { sensitivity: "base" }));
+  return c.json(lista);
 });
 
 // ---- filiais ----
@@ -1982,6 +2343,14 @@ async function runCron(env: Env): Promise<Row> {
   await metaSet(db, "cron_termo_idx", String((termoIdx + 1) % CRON_TERMOS.length));
   await metaSet(db, "cron_last_run", agora());
   await metaSet(db, "cron_last_stats", JSON.stringify(stats));
+  // Housekeeping de seguranca: limpa sessoes expiradas/revogadas e bloqueios
+  // vencidos (best-effort, nunca derruba a varredura).
+  try {
+    await db.prepare("DELETE FROM sessoes WHERE expira_em < ? OR (revogada=1 AND ultima_atividade < ?)")
+      .bind(agora(), agoraMais(-7 * 24 * 60 * 60)).run();
+    await db.prepare("DELETE FROM login_tentativas WHERE bloqueado_ate IS NULL OR bloqueado_ate < ?")
+      .bind(agoraMais(-24 * 60 * 60)).run();
+  } catch { /* ignora */ }
   console.log(
     `Cron prospecção: ${buscas} buscas em ${lote.length} cidades · termo "${termo}" · ` +
     `${pendentes} pendentes novos, ${jaNaBase} já na base, ${jaPendentes} já pendentes, ` +
@@ -2103,6 +2472,7 @@ const MODELO_COLS: [string, string][] = [
   ["Experiência com antenas?", "exp_antenas"],
   ["Equipe técnica?", "equipe_tecnica"],
   ["Loja física?", "loja_fisica"],
+  ["Possui estoque?", "possui_estoque"],
   ["Qtd. filiais", "qtd_filiais"],
   ["Capacidade de vendas/mês", "capacidade_vendas_mes"],
   ["Faixa de potencial", "faixa_potencial"],
@@ -2154,6 +2524,8 @@ app.get("/api/export.xlsx", async (c) => {
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   XLSX.utils.book_append_sheet(wb, ws, "Empresas");
+  // Exportacao de dados e auditada (§5): quem baixou, quando, quantas linhas.
+  await logSeguranca(c, "export", { depois: `${(results ?? []).length} empresas` });
   return xlsxResponse(c, wb, "empresas_starlink.xlsx");
 });
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mapa Estratégico de Prospecção · Bradel Starlink</title>
+<title>Mapa Estratégico de Prospecção · Starlink</title>
 <link rel="stylesheet" href="/static/styles.css?v=202611171153">
 </head>
 <body>
@@ -14,7 +14,7 @@
     <div class="logo">B</div>
     <div class="tt">
       <b>Mapa Estratégico de Prospecção</b>
-      <span>Bradel · Parceiros Starlink</span>
+      <span>Parceiros Starlink</span>
     </div>
   </div>
 
@@ -27,8 +27,8 @@
   </nav>
 
   <div class="topactions">
-    <button class="btn primary" onclick="App.novaEmpresa()" data-tip="Cadastra manualmente uma nova revenda/empresa na base, preenchendo a ficha.">+ Novo lojista</button>
-    <button class="btn ghost" onclick="App.abrirImport()" data-tip="Sobe uma planilha (.xlsx ou .csv) para criar ou atualizar várias empresas de uma vez. Use o 'Modelo' como base.">Importar</button>
+    <button class="btn primary" id="btn-novo" onclick="App.novaEmpresa()" data-tip="Cadastra manualmente uma nova revenda/empresa na base, preenchendo a ficha.">+ Novo lojista</button>
+    <button class="btn ghost" id="btn-import" onclick="App.abrirImport()" data-tip="Sobe uma planilha (.xlsx ou .csv) para criar ou atualizar várias empresas de uma vez. Use o 'Modelo' como base.">Importar</button>
     <button class="btn ghost" onclick="App.exportar()" data-tip="Baixa em Excel as empresas da lista atual, já respeitando os filtros e a busca aplicados.">Exportar</button>
     <button class="btn ghost" onclick="App.modelo()" data-tip="Baixa uma planilha modelo, com as colunas na ordem certa para preencher e depois importar.">Modelo</button>
     <button class="btn icon-btn ghost" title="Alternar tema" data-tip="Alterna entre o tema claro e escuro da plataforma." onclick="App.tema()">◐</button>
@@ -43,7 +43,9 @@
       </button>
       <div class="usermenu-pop" id="usermenu-pop" hidden>
         <button onclick="App.abrirTrocarSenha()">Trocar minha senha</button>
+        <button onclick="App.abrirMinhasSessoes()">Meus dispositivos / sessões</button>
         <button id="menu-usuarios" onclick="App.abrirUsuarios()" hidden>Gerenciar usuários</button>
+        <button id="menu-seguranca" onclick="App.abrirSeguranca()" hidden>Segurança e auditoria</button>
         <a href="/logout">Sair</a>
       </div>
     </div>
@@ -265,6 +267,6 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=202611171153"></script>
+<script src="/static/app.js?v=202611171600"></script>
 </body>
 </html>

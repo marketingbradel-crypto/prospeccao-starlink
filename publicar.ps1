@@ -52,9 +52,16 @@ if ($pendentes) {
 Passo "Enviando pro GitHub (push)..."
 git push
 
-# 3) DEPLOY na Cloudflare (garante producao atualizada, independe do CI)
-Passo "Publicando na Cloudflare (wrangler deploy)..."
+# 3) MIGRATIONS no D1 (remoto) ANTES do deploy direto. O codigo novo depende das
+# tabelas de sessao/seguranca (migration 0013). Sem isto, um deploy direto poderia
+# subir o Worker antes de o CI aplicar a migration e o login quebraria. Aditivo e
+# idempotente: aplica so o que estiver pendente.
+Passo "Aplicando migrations no D1 (remoto)..."
 Set-Location (Join-Path $ProjDir "cloudflare")
+npx wrangler d1 migrations apply prospeccao-starlink --remote
+
+# 4) DEPLOY na Cloudflare (garante producao atualizada, independe do CI)
+Passo "Publicando na Cloudflare (wrangler deploy)..."
 npx wrangler deploy
 Set-Location $ProjDir
 

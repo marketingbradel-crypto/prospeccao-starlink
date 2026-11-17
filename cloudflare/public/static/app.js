@@ -179,6 +179,7 @@ const App = (() => {
       { k: "exp_antenas", l: "Experiência com antenas?", type: "bool", tip: "Marque se já tem experiência instalando antenas (parabólica, rádio, satélite)." },
       { k: "equipe_tecnica", l: "Possui equipe técnica?", type: "bool", tip: "Marque se a empresa tem equipe própria para instalação e suporte técnico." },
       { k: "loja_fisica", l: "Possui loja física?", type: "bool", tip: "Marque se a empresa tem ponto de venda físico aberto ao público." },
+      { k: "possui_estoque", l: "Possui estoque?", type: "bool", tip: "Marque se a empresa mantém estoque de produtos (antenas/equipamentos)." },
       { k: "qtd_filiais", l: "Qtd. filiais", type: "num" },
       { k: "capacidade_vendas_mes", l: "Capacidade de vendas/mês", tip: "Estimativa de quantas antenas a empresa conseguiria vender por mês. Base para classificar o potencial." },
       { k: "interesse_parceiro", l: "Interesse em ser parceiro", type: "select", opts: "interesse", tip: "Nível de interesse que a empresa demonstrou em se tornar parceira Starlink." },
@@ -227,9 +228,16 @@ const App = (() => {
     try { ME = await (await fetch("/api/me")).json(); } catch (e) { ME = null; }
     if (!ME || ME.erro) { ME = null; return; }
     const nome = ME.username || "";
-    $("uname").textContent = nome + (ME.admin ? " · admin" : "");
+    const papelRot = ME.admin ? " · admin" : (ME.papel === "consulta" ? " · consulta" : "");
+    $("uname").textContent = nome + papelRot;
     $("uava").textContent = (nome[0] || "?");
     $("menu-usuarios").hidden = !ME.admin;
+    if ($("menu-seguranca")) $("menu-seguranca").hidden = !ME.admin;
+    // Gating por papel (RBAC): perfil Consulta não vê botões de escrita (o backend
+    // bloqueia de qualquer forma — isto é só UX). Exportar/Modelo continuam (leitura).
+    const consulta = ME.papel === "consulta";
+    if ($("btn-novo")) $("btn-novo").hidden = consulta;
+    if ($("btn-import")) $("btn-import").hidden = consulta;
     // Aba Gerencial: só aparece para quem tem permissão (admin sempre tem).
     const temGer = !!(ME.perm_gerencial || ME.admin);
     if ($("tab-gerencial")) $("tab-gerencial").hidden = !temGer;
@@ -306,10 +314,15 @@ const App = (() => {
   async function recarregarUsuarios() {
     let lista = [];
     try { const r = await fetch("/api/usuarios"); lista = r.ok ? await r.json() : []; } catch (e) {}
+    const papelSel = (uname, cur) => `<select class="papel-sel" onchange="App.setPapel('${esc(uname)}', this.value)"
+        data-tip="Papel (RBAC): Admin = tudo · Operador = cria/edita (não exclui empresa) · Consulta = só leitura.">
+        ${["admin", "operador", "consulta"].map(p => `<option value="${p}" ${cur === p ? "selected" : ""}>${p[0].toUpperCase() + p.slice(1)}</option>`).join("")}
+      </select>`;
     const itens = lista.map(u => `
       <li>
         <span class="uava" style="width:26px;height:26px">${esc((u.username || "?")[0])}</span>
         <span class="un">${esc(u.username)} ${u.must_change ? '<span class="pend">senha padrão</span>' : '<span class="okb">senha própria</span>'}</span>
+        ${papelSel(u.username, u.papel || "operador")}
         <label class="ger-perm" data-tip="Libera o acesso à aba Gerencial (produtividade). Não altera as demais permissões.">
           <input type="checkbox" ${Number(u.perm_gerencial) ? "checked" : ""} onchange="App.toggleGerencial('${esc(u.username)}', this.checked)"> Gerencial
         </label>
@@ -317,18 +330,25 @@ const App = (() => {
         <button class="lnk danger" onclick="App.delUsuario('${esc(u.username)}')">remover</button>
       </li>`).join("");
     $("modal-b").innerHTML = `
-      <div class="modal-note">Para liberar alguém, informe o usuário (ex.: <b>leandro</b>). A pessoa entra com esse usuário + a <b>senha padrão</b> e define a própria senha no 1º acesso.</div>
+      <div class="modal-note">Para liberar alguém, informe o usuário (ex.: <b>leandro</b>) e o papel. A pessoa entra com esse usuário + a <b>senha padrão</b> e define a própria senha no 1º acesso.<br>
+        <b>Admin</b>: tudo · <b>Operador</b>: cria e edita (não exclui empresa) · <b>Consulta</b>: somente leitura.</div>
       <div class="fld" style="display:flex;gap:8px;margin-bottom:14px">
         <input id="nu-user" placeholder="novo usuário (minúsculo)" autocapitalize="none" spellcheck="false" style="flex:1">
+        <select id="nu-papel" style="flex:0 0 auto">
+          <option value="operador">Operador</option>
+          <option value="consulta">Consulta</option>
+          <option value="admin">Admin</option>
+        </select>
         <button class="btn primary" onclick="App.addUsuario()">Adicionar</button>
       </div>
       <ul class="userlist">${itens || '<li class="okb">Ninguém definiu senha ainda. Quem entrar pela 1ª vez (ou for liberado aqui) aparece nesta lista.</li>'}</ul>`;
   }
   async function addUsuario() {
     const username = ($("nu-user").value || "").trim().toLowerCase();
+    const papel = ($("nu-papel") && $("nu-papel").value) || "operador";
     if (!username) { toast("Informe o usuário."); return; }
     const r = await fetch("/api/usuarios", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username }),
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, papel }),
     });
     const js = await r.json().catch(() => ({}));
     if (!r.ok) { toast(js.erro || "Não foi possível adicionar."); return; }
@@ -353,6 +373,118 @@ const App = (() => {
     });
     if (!r.ok) { toast("Falha ao alterar acesso gerencial."); await recarregarUsuarios(); return; }
     toast(ativo ? "Acesso gerencial liberado: " + username : "Acesso gerencial removido: " + username);
+  }
+  async function setPapel(username, papel) {
+    const r = await fetch("/api/usuarios/" + encodeURIComponent(username) + "/papel", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ papel }),
+    });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(js.erro || "Falha ao alterar o papel."); await recarregarUsuarios(); return; }
+    toast("Papel de " + username + " alterado para " + papel + ".");
+  }
+
+  // ---- minhas sessões (qualquer usuário) ----
+  function uaCurto(ua) {
+    ua = ua || "";
+    let os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad|iOS/.test(ua) ? "iOS" : /Mac/.test(ua) ? "macOS" : /Linux/.test(ua) ? "Linux" : "";
+    let br = /Edg/.test(ua) ? "Edge" : /Chrome/.test(ua) ? "Chrome" : /Firefox/.test(ua) ? "Firefox" : /Safari/.test(ua) ? "Safari" : "";
+    return [br, os].filter(Boolean).join(" · ") || "dispositivo";
+  }
+  async function abrirMinhasSessoes() {
+    fecharUserMenu();
+    abrirModal("Meus dispositivos / sessões", `<div class="modal-note">Carregando…</div>`);
+    let lista = [];
+    try { const r = await fetch("/api/me/sessoes"); lista = r.ok ? await r.json() : []; } catch (e) {}
+    const itens = lista.map(s => `
+      <li>
+        <span class="un">${uaCurto(s.user_agent)} ${s.atual ? '<span class="okb">esta sessão</span>' : ''}</span>
+        <span class="sess-meta">${esc(s.ip || "—")} · ativo ${esc(s.ultima_atividade || "")}</span>
+      </li>`).join("");
+    $("modal-b").innerHTML = `
+      <div class="modal-note">Sessões abertas com o seu login. Se não reconhecer alguma, encerre as outras e troque sua senha.</div>
+      <ul class="userlist sesslist">${itens || '<li class="okb">Nenhuma sessão ativa além desta.</li>'}</ul>
+      <button class="btn primary" style="width:100%;margin-top:12px" onclick="App.logoutAll()">Encerrar todas as outras sessões</button>`;
+  }
+  async function logoutAll() {
+    const r = await fetch("/api/me/logout-all", { method: "POST" });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok) { toast("Falha ao encerrar sessões."); return; }
+    toast((js.encerradas || 0) + " sessão(ões) encerrada(s).");
+    await abrirMinhasSessoes();
+  }
+
+  // ---- Segurança e auditoria (somente admin) ----
+  let segTab = "sessoes";
+  async function abrirSeguranca() {
+    fecharUserMenu();
+    segTab = "sessoes";
+    abrirModal("Segurança e auditoria", `<div class="modal-note">Carregando…</div>`);
+    await renderSeguranca();
+  }
+  async function segAba(t) { segTab = t; await renderSeguranca(); }
+  async function renderSeguranca() {
+    let resumo = {};
+    try { resumo = await (await fetch("/api/seguranca/resumo")).json(); } catch (e) {}
+    const kpis = `
+      <div class="seg-kpis">
+        <div class="seg-kpi"><b>${resumo.sessoes_ativas ?? "–"}</b><span>sessões ativas</span></div>
+        <div class="seg-kpi"><b>${resumo.usuarios_online ?? "–"}</b><span>usuários online</span></div>
+        <div class="seg-kpi"><b>${resumo.bloqueios_ativos ?? "–"}</b><span>logins bloqueados</span></div>
+        <div class="seg-kpi"><b>${resumo.falhas_hoje ?? "–"}</b><span>falhas de login hoje</span></div>
+      </div>`;
+    const tabBtn = (id, lbl) => `<button class="seg-tabbtn ${segTab === id ? "on" : ""}" onclick="App.segAba('${id}')">${lbl}</button>`;
+    const tabs = `<div class="seg-tabs">${tabBtn("sessoes", "Sessões ativas")}${tabBtn("acessos", "Histórico de acessos")}${tabBtn("tentativas", "Tentativas de login")}</div>`;
+    $("modal-b").innerHTML = kpis + tabs + `<div id="seg-body"><div class="modal-note">Carregando…</div></div>`;
+    try {
+      if (segTab === "sessoes") await renderSegSessoes();
+      else if (segTab === "acessos") await renderSegAcessos();
+      else await renderSegTentativas();
+    } catch (e) { $("seg-body").innerHTML = `<div class="modal-note">Não foi possível carregar.</div>`; }
+  }
+  async function renderSegSessoes() {
+    const lista = await (await fetch("/api/seguranca/sessoes")).json();
+    const itens = (lista || []).map(s => `
+      <li>
+        <span class="un">${esc(s.usuario)} ${s.atual ? '<span class="okb">você</span>' : ''}</span>
+        <span class="sess-meta">${uaCurto(s.user_agent)} · ${esc(s.ip || "—")} · ativo ${esc(s.ultima_atividade || "")}</span>
+        ${s.atual ? "" : `<button class="lnk danger" onclick="App.segRevogar('${esc(s.id)}')">encerrar</button>`}
+      </li>`).join("");
+    $("seg-body").innerHTML = `<ul class="userlist sesslist">${itens || '<li class="okb">Nenhuma sessão ativa.</li>'}</ul>`;
+  }
+  async function segRevogar(id) {
+    const r = await fetch("/api/seguranca/sessoes/revogar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+    });
+    if (!r.ok) { toast("Falha ao encerrar a sessão."); return; }
+    toast("Sessão encerrada."); await renderSegSessoes();
+  }
+  async function renderSegAcessos() {
+    const lista = await (await fetch("/api/seguranca/acessos?limit=200")).json();
+    const linhas = (lista || []).map(a => `
+      <tr>
+        <td>${esc((a.ts || "").slice(0, 19))}</td>
+        <td>${esc(a.usuario || "—")}</td>
+        <td>${esc(a.acao_label || a.acao)}</td>
+        <td>${esc([a.campo, a.valor_depois].filter(Boolean).join(" → "))}</td>
+        <td>${esc(a.ip || "")}</td>
+      </tr>`).join("");
+    $("seg-body").innerHTML = `<div class="seg-tablewrap"><table class="seg-table">
+      <thead><tr><th>Quando</th><th>Usuário</th><th>Evento</th><th>Detalhe</th><th>IP</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="5">Sem registros.</td></tr>'}</tbody></table></div>`;
+  }
+  async function renderSegTentativas() {
+    const lista = await (await fetch("/api/seguranca/tentativas")).json();
+    const linhas = (lista || []).map(t => `
+      <tr class="${t.bloqueado ? "bloq" : ""}">
+        <td>${esc(t.usuario || "—")}</td>
+        <td>${esc(t.ip || "")}</td>
+        <td>${t.tentativas}</td>
+        <td>${t.bloqueado ? "🔒 bloqueado até " + esc((t.bloqueado_ate || "").slice(11, 19)) : "—"}</td>
+      </tr>`).join("");
+    $("seg-body").innerHTML = `<div class="modal-note">Bloqueio automático após 5 falhas (15 min). Some ao expirar.</div>
+      <div class="seg-tablewrap"><table class="seg-table">
+      <thead><tr><th>Usuário</th><th>IP</th><th>Falhas</th><th>Situação</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="4">Nenhuma tentativa recente.</td></tr>'}</tbody></table></div>`;
   }
 
   // Carrega os municípios das UFs de atuação (p/ reconhecer a 1ª cidade em campos
@@ -2070,6 +2202,7 @@ const App = (() => {
     if (e.exp_antenas) chips.push("Experiência c/ antenas");
     if (e.equipe_tecnica) chips.push("Equipe técnica");
     if (e.loja_fisica) chips.push("Loja física");
+    if (e.possui_estoque) chips.push("Possui estoque");
     const contatos = (e.contatos || []).map(c => {
       // Carimbo automático: quem registrou no sistema e o momento exato do registro.
       const carimbo = c.criado_por
@@ -2160,13 +2293,22 @@ const App = (() => {
     const nome = nova ? "Novo lojista" : (e.nome_fantasia || e.razao_social || "Empresa");
     const sub = nova ? "Preencha os dados e salve" :
       `${esc(e.codigo || "")}${e.cidade ? " · " + esc(e.cidade) : ""}${e.uf ? " · " + e.uf : ""}`;
-    const corpo = (editMode || nova) ? formHTML(e) : viewHTML(e);
-    const footer = (editMode || nova)
-      ? `<button class="btn primary" onclick="App.salvar()">Salvar</button>
+    // Gating por papel (RBAC): consulta = somente leitura; excluir empresa = só admin.
+    // O backend é a autoridade — isto é apenas UX (esconder o que não pode usar).
+    const consulta = !!(ME && ME.papel === "consulta");
+    const podeExcluir = !!(ME && ME.pode_excluir_empresa);
+    const corpo = (!consulta && (editMode || nova)) ? formHTML(e) : viewHTML(e);
+    let footer;
+    if (consulta) {
+      footer = `<span class="df-ro" style="color:var(--muted);font-size:13px">Perfil <b>Consulta</b> · somente leitura</span>`;
+    } else if (editMode || nova) {
+      footer = `<button class="btn primary" onclick="App.salvar()">Salvar</button>
          ${nova ? "" : `<button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.verFicha()">Cancelar</button>`}
-         ${nova ? "" : `<button class="btn ghost danger" style="margin-left:auto" onclick="App.excluir()">Excluir</button>`}`
-      : `<button class="btn primary" onclick="App.editarFicha()">Editar dados</button>
-         <button class="btn ghost danger" style="margin-left:auto" onclick="App.excluir()">Excluir</button>`;
+         ${(nova || !podeExcluir) ? "" : `<button class="btn ghost danger" style="margin-left:auto" onclick="App.excluir()">Excluir</button>`}`;
+    } else {
+      footer = `<button class="btn primary" onclick="App.editarFicha()">Editar dados</button>
+         ${podeExcluir ? `<button class="btn ghost danger" style="margin-left:auto" onclick="App.excluir()">Excluir</button>` : ""}`;
+    }
     $("drawer").innerHTML = `
       <div class="dh">
         <div class="tt"><h3>${esc(nome)}</h3><div class="sub">${sub}</div></div>
@@ -2343,6 +2485,7 @@ const App = (() => {
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,
     toggleGerencial, gerPreset, gerCustom, gerToggleColab, gerTodosColab,
+    setPapel, abrirMinhasSessoes, logoutAll, abrirSeguranca, segAba, segRevogar,
   };
 })();
 
