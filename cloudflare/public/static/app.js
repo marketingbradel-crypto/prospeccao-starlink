@@ -557,6 +557,20 @@ const App = (() => {
     EMPRESAS = emp; MAP = mp; DASH = dsh;
     renderKPIs(); renderMapa(); renderLista(); renderApuracao();
     if (!$("view-painel").classList.contains("hidden")) renderPainel();
+    // Mantém o Follow-up e seu badge em sincronia após qualquer salvamento,
+    // sem bloquear a atualização do mapa/lista (fire-and-forget).
+    sincronizarFollowUp();
+  }
+
+  // Rebusca o follow-up em segundo plano: atualiza o badge sempre e re-renderiza
+  // a lista só quando a aba está aberta. Chamado após salvar na ficha.
+  async function sincronizarFollowUp() {
+    let d;
+    try { d = await (await fetch("/api/follow-up")).json(); }
+    catch (e) { return; }
+    FU = d;
+    atualizarBadgeFollowUp(d);
+    if (!$("view-followup").classList.contains("hidden")) renderFollowUp();
   }
 
   // ==================== KPIs ====================
