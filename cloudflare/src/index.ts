@@ -241,6 +241,38 @@ function empresaDict(row: Row | null): Row | null {
 }
 
 // --------------------------------------------------------------------------
+// Auditoria: registra CADA acao humana (append-only) p/ o painel Gerencial.
+// Nunca deve quebrar a acao principal — por isso vai em try/catch. 'ts'/'dia'
+// em horario de Brasilia; 'usuario' = quem esta logado. origem='sistema' para
+// import/cron (nao conta como produtividade humana).
+// --------------------------------------------------------------------------
+type Aud = {
+  acao: string;
+  empresa_id?: number | null;
+  empresa_nome?: string | null;
+  alvo_id?: number | null;
+  campo?: string | null;
+  antes?: string | null;
+  depois?: string | null;
+  origem?: string; // 'humano' (default) | 'sistema'
+  usuario?: string | null; // sobrescreve o login (ex.: cron sem usuario)
+};
+async function registrarAuditoria(c: any, a: Aud): Promise<void> {
+  try {
+    const quem = a.usuario !== undefined ? a.usuario : (c.get("usuario")?.username ?? null);
+    await c.env.DB.prepare(
+      "INSERT INTO auditoria (ts,dia,usuario,acao,empresa_id,empresa_nome,alvo_id,campo,valor_antes,valor_depois,origem) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+    ).bind(
+      agora(), hoje(), quem, a.acao,
+      a.empresa_id ?? null, a.empresa_nome ?? null, a.alvo_id ?? null,
+      a.campo ?? null, a.antes ?? null, a.depois ?? null, a.origem ?? "humano"
+    ).run();
+  } catch (_e) {
+    // log best-effort: um erro aqui nao pode derrubar o POST/PUT/PATCH original.
+  }
+}
+
+// --------------------------------------------------------------------------
 // Filtros de listagem
 // --------------------------------------------------------------------------
 function construirWhere(q: Record<string, string | undefined>): { clause: string; params: any[] } {
@@ -597,24 +629,48 @@ app.post("/api/empresas", async (c) => {
   if (dup) return c.json({ erro: "Já existe uma empresa com este CNPJ.", id: dup }, 409);
   if (!e.codigo) e.codigo = await proximoCodigo(c.env.DB);
   const eid = await inserirEmpresa(c.env.DB, e);
+  await registrarAuditoria(c, {
+    acao: "empresa_nova", empresa_id: eid,
+    empresa_nome: String(e.razao_social || e.nome_fantasia || ""),
+  });
   return c.json({ id: eid }, 201);
 });
 
 app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
   const eid = Number(c.req.param("eid"));
-  const exists = await c.env.DB.prepare("SELECT 1 FROM empresas WHERE id=?").bind(eid).first();
-  if (!exists) return c.notFound();
+  const atual = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(eid).first<Row>();
+  if (!atual) return c.notFound();
   const data = await jsonBody(c);
   const e = montarEmpresa(data, false);
   const dup = await empresaDupCnpj(c.env.DB, e.cnpj_norm, eid);
   if (dup) return c.json({ erro: "Outra empresa já usa este CNPJ.", id: dup }, 409);
+  // Diff dos campos que realmente mudaram (ignora carimbos automaticos).
+  const mudou: string[] = [];
+  const antes: Row = {}, depois: Row = {};
+  for (const k of Object.keys(e)) {
+    if (k === "atualizado_em" || k === "criado_em") continue;
+    const va = atual[k] ?? null, vn = e[k] ?? null;
+    if (String(va ?? "") !== String(vn ?? "")) { mudou.push(k); antes[k] = va; depois[k] = vn; }
+  }
   await atualizarEmpresa(c.env.DB, eid, e);
+  if (mudou.length) {
+    await registrarAuditoria(c, {
+      acao: "empresa_edit", empresa_id: eid,
+      empresa_nome: String(atual.razao_social || atual.nome_fantasia || ""),
+      campo: mudou.join(", "), antes: JSON.stringify(antes), depois: JSON.stringify(depois),
+    });
+  }
   return c.json({ id: eid });
 });
 
 app.delete("/api/empresas/:eid{[0-9]+}", async (c) => {
   const eid = Number(c.req.param("eid"));
+  const emp = await c.env.DB.prepare("SELECT razao_social,nome_fantasia FROM empresas WHERE id=?").bind(eid).first<Row>();
   await c.env.DB.prepare("DELETE FROM empresas WHERE id=?").bind(eid).run();
+  await registrarAuditoria(c, {
+    acao: "empresa_remove", empresa_id: eid,
+    empresa_nome: emp ? String(emp.razao_social || emp.nome_fantasia || "") : null,
+  });
   return c.json({ ok: true });
 });
 
@@ -623,6 +679,7 @@ app.patch("/api/empresas/:eid{[0-9]+}/status", async (c) => {
   const data = await jsonBody(c);
   const novo = limpar(data.status);
   if (!L.STATUS.includes(novo)) return c.json({ erro: "Status inválido." }, 400);
+  const atual = await c.env.DB.prepare("SELECT status,razao_social,nome_fantasia FROM empresas WHERE id=?").bind(eid).first<Row>();
   if ("motivo_perda" in data) {
     await c.env.DB
       .prepare("UPDATE empresas SET status=?, atualizado_em=?, motivo_perda=? WHERE id=?")
@@ -631,6 +688,13 @@ app.patch("/api/empresas/:eid{[0-9]+}/status", async (c) => {
     await c.env.DB
       .prepare("UPDATE empresas SET status=?, atualizado_em=? WHERE id=?")
       .bind(novo, agora(), eid).run();
+  }
+  if (atual && String(atual.status ?? "") !== novo) {
+    await registrarAuditoria(c, {
+      acao: "status", empresa_id: eid,
+      empresa_nome: String(atual.razao_social || atual.nome_fantasia || ""),
+      campo: "status", antes: String(atual.status ?? ""), depois: novo,
+    });
   }
   return c.json({ id: eid, status: novo, cor: L.corDoStatus(novo) });
 });
@@ -641,8 +705,16 @@ app.patch("/api/empresas/:eid{[0-9]+}/faixa", async (c) => {
   const data = await jsonBody(c);
   const faixa = limpar(data.faixa_potencial) || "";
   if (faixa && !L.FAIXAS_POTENCIAL.includes(faixa)) return c.json({ erro: "Faixa inválida." }, 400);
+  const atual = await c.env.DB.prepare("SELECT faixa_potencial,razao_social,nome_fantasia FROM empresas WHERE id=?").bind(eid).first<Row>();
   await c.env.DB.prepare("UPDATE empresas SET faixa_potencial=?, atualizado_em=? WHERE id=?")
     .bind(faixa || null, agora(), eid).run();
+  if (atual && String(atual.faixa_potencial ?? "") !== faixa) {
+    await registrarAuditoria(c, {
+      acao: "faixa", empresa_id: eid,
+      empresa_nome: String(atual.razao_social || atual.nome_fantasia || ""),
+      campo: "faixa_potencial", antes: String(atual.faixa_potencial ?? ""), depois: faixa,
+    });
+  }
   return c.json({ id: eid, faixa_potencial: faixa });
 });
 
@@ -653,7 +725,7 @@ app.post("/api/empresas/:eid{[0-9]+}/contatos", async (c) => {
   const dataContato = limpar(data.data) || hoje();
   const quem = c.get("usuario").username;          // carimbo de quem registrou (auto)
   const responsavel = limpar(data.responsavel) || quem; // por padrao, a pessoa logada
-  await c.env.DB
+  const res = await c.env.DB
     .prepare(
       "INSERT INTO contatos (empresa_id,data,tipo,responsavel,resumo,proxima_acao,proxima_acao_data,criado_em,criado_por) VALUES (?,?,?,?,?,?,?,?,?)"
     )
@@ -663,19 +735,39 @@ app.post("/api/empresas/:eid{[0-9]+}/contatos", async (c) => {
   await c.env.DB
     .prepare("UPDATE empresas SET data_ultimo_contato=?, proxima_acao=?, proxima_acao_data=?, atualizado_em=? WHERE id=?")
     .bind(dataContato, limpar(data.proxima_acao) ?? null, limpar(data.proxima_acao_data) ?? null, agora(), eid).run();
+  const emp = await c.env.DB.prepare("SELECT razao_social,nome_fantasia FROM empresas WHERE id=?").bind(eid).first<Row>();
+  await registrarAuditoria(c, {
+    acao: "contato", empresa_id: eid,
+    empresa_nome: emp ? String(emp.razao_social || emp.nome_fantasia || "") : null,
+    alvo_id: Number((res as any)?.meta?.last_row_id) || null,
+    campo: limpar(data.tipo) || null, depois: limpar(data.resumo) || null,
+  });
   return c.json({ ok: true }, 201);
 });
 
 app.delete("/api/contatos/:cid{[0-9]+}", async (c) => {
-  await c.env.DB.prepare("DELETE FROM contatos WHERE id=?").bind(Number(c.req.param("cid"))).run();
+  const cid = Number(c.req.param("cid"));
+  const row = await c.env.DB.prepare(
+    "SELECT c.empresa_id, c.resumo, e.razao_social, e.nome_fantasia FROM contatos c LEFT JOIN empresas e ON e.id=c.empresa_id WHERE c.id=?")
+    .bind(cid).first<Row>();
+  await c.env.DB.prepare("DELETE FROM contatos WHERE id=?").bind(cid).run();
+  await registrarAuditoria(c, {
+    acao: "contato_remove", empresa_id: row ? Number(row.empresa_id) : null,
+    empresa_nome: row ? String(row.razao_social || row.nome_fantasia || "") : null,
+    alvo_id: cid, antes: row ? String(row.resumo ?? "") : null,
+  });
   return c.json({ ok: true });
 });
 
 // ---- sessao / usuarios ----
 // Quem sou eu (o front usa p/ chip, menu admin e para forcar a 1a troca de senha).
-app.get("/api/me", (c) => {
+app.get("/api/me", async (c) => {
   const u = c.get("usuario");
-  return c.json({ username: u.username, admin: u.admin, env: !!u.env, must_change: u.mustChange });
+  // responsavel = carteira do login (filtra o Follow-up por padrao). "" = ve tudo (geral).
+  const responsavel = L.responsavelDoLogin(u.username);
+  // Permissao de acesso gerencial: admin do env sempre tem; os demais so se liberados.
+  const perm_gerencial = await temPermGerencial(c, u);
+  return c.json({ username: u.username, admin: u.admin, env: !!u.env, must_change: u.mustChange, responsavel, perm_gerencial });
 });
 
 // Define/troca a senha pessoal. No 1o acesso (mustChange) nao pede a senha atual;
@@ -714,11 +806,36 @@ app.post("/api/me/senha", async (c) => {
 // --- gestao de usuarios (somente o superadmin/bradel) ---
 function soAdmin(c: any) { return c.get("usuario")?.admin === true; }
 
+// Permissao de acesso gerencial: o admin do env sempre tem; os demais so se o
+// admin liberou (usuarios.perm_gerencial=1). Independente dos demais modulos.
+async function temPermGerencial(c: any, u?: Usuario): Promise<boolean> {
+  u = u || c.get("usuario");
+  if (!u) return false;
+  if (u.admin) return true;
+  const r = await c.env.DB.prepare("SELECT perm_gerencial FROM usuarios WHERE username=?")
+    .bind(u.username).first();
+  return !!(r && Number(r.perm_gerencial));
+}
+
 app.get("/api/usuarios", async (c) => {
   if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
   const { results } = await c.env.DB.prepare(
-    "SELECT username,must_change,criado_em,atualizado_em FROM usuarios ORDER BY username COLLATE NOCASE").all<Row>();
+    "SELECT username,must_change,perm_gerencial,criado_em,atualizado_em FROM usuarios ORDER BY username COLLATE NOCASE").all<Row>();
   return c.json(results ?? []);
+});
+
+// Liberar/remover o acesso gerencial de um usuario (somente o admin). Nao mexe
+// em nenhuma outra permissao/modulo.
+app.post("/api/usuarios/:username/gerencial", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const username = normUser(c.req.param("username"));
+  const r = await c.env.DB.prepare("SELECT username FROM usuarios WHERE username=?").bind(username).first();
+  if (!r) return c.json({ erro: "Usuário não encontrado." }, 404);
+  const d = await jsonBody(c);
+  const ativo = toBoolInt(d.ativo);
+  await c.env.DB.prepare("UPDATE usuarios SET perm_gerencial=?, atualizado_em=? WHERE username=?")
+    .bind(ativo, agora(), username).run();
+  return c.json({ ok: true, perm_gerencial: !!ativo });
 });
 
 // "Adicionar" alguem = liberar o 1o acesso: cria a linha ja em mustChange, de modo
@@ -761,11 +878,129 @@ app.delete("/api/usuarios/:username", async (c) => {
   return c.json({ ok: true });
 });
 
+// --------------------------------------------------------------------------
+// GERENCIAL — produtividade comercial (acesso restrito por perm_gerencial)
+// --------------------------------------------------------------------------
+// Acoes que contam como "atualizacao humana" na produtividade. Import/cron tem
+// origem='sistema' e nunca entram (requisito 7).
+const ACOES_PRODUTIVIDADE = [
+  "contato", "status", "faixa", "empresa_edit", "empresa_nova",
+  "filial_nova", "filial_remove", "contato_remove", "empresa_remove",
+];
+
+// Normaliza intervalo de datas (YYYY-MM-DD). Default: ultimos 30 dias.
+function intervaloDatas(c: any): { inicio: string; fim: string } {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  let fim = String(c.req.query("fim") || "").trim();
+  let inicio = String(c.req.query("inicio") || "").trim();
+  if (!re.test(fim)) fim = hoje();
+  if (!re.test(inicio)) {
+    // 30 dias atras a partir de 'fim'
+    const t = Date.parse(fim + "T00:00:00Z") - 29 * 86400000;
+    inicio = new Date(t).toISOString().slice(0, 10);
+  }
+  if (inicio > fim) { const tmp = inicio; inicio = fim; fim = tmp; }
+  return { inicio, fim };
+}
+
+// Lista de dias (YYYY-MM-DD) de inicio..fim, inclusivo (cap de 180 p/ seguranca).
+function listaDias(inicio: string, fim: string): string[] {
+  const out: string[] = [];
+  let t = Date.parse(inicio + "T00:00:00Z");
+  const tf = Date.parse(fim + "T00:00:00Z");
+  for (let i = 0; i <= 180 && t <= tf; i++, t += 86400000) out.push(new Date(t).toISOString().slice(0, 10));
+  return out;
+}
+
+// Painel principal: matriz colaborador x dia + totais, ranking e medias.
+app.get("/api/gerencial/produtividade", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso gerencial." }, 403);
+  const { inicio, fim } = intervaloDatas(c);
+  const dias = listaDias(inicio, fim);
+
+  const placeholders = ACOES_PRODUTIVIDADE.map(() => "?").join(",");
+  const params: any[] = [inicio, fim, ...ACOES_PRODUTIVIDADE];
+  let filtroUser = "";
+  const usersQ = String(c.req.query("usuarios") || "").trim();
+  const usersSel = usersQ ? usersQ.split(",").map((s) => normUser(s)).filter(Boolean) : [];
+  if (usersSel.length) {
+    filtroUser = ` AND usuario IN (${usersSel.map(() => "?").join(",")})`;
+    params.push(...usersSel);
+  }
+  const { results } = await c.env.DB.prepare(
+    `SELECT usuario, dia, COUNT(*) AS n FROM auditoria
+      WHERE origem='humano' AND dia BETWEEN ? AND ? AND acao IN (${placeholders})${filtroUser}
+      GROUP BY usuario, dia`
+  ).bind(...params).all<Row>();
+
+  const matriz: Record<string, Record<string, number>> = {};
+  const totaisUser: Record<string, number> = {};
+  const totaisDia: Record<string, number> = {};
+  let totalGeral = 0;
+  for (const r of results ?? []) {
+    const u = String(r.usuario || "—");
+    const d = String(r.dia);
+    const n = Number(r.n) || 0;
+    (matriz[u] = matriz[u] || {})[d] = n;
+    totaisUser[u] = (totaisUser[u] || 0) + n;
+    totaisDia[d] = (totaisDia[d] || 0) + n;
+    totalGeral += n;
+  }
+  const usuarios = Object.keys(matriz).sort((a, b) => (totaisUser[b] - totaisUser[a]) || a.localeCompare(b));
+  const ranking = usuarios.map((u) => ({ usuario: u, total: totaisUser[u] }));
+  const nColab = usuarios.length;
+  const nDias = dias.length || 1;
+  const media_diaria_por_colab = nColab ? totalGeral / nColab / nDias : 0;
+
+  return c.json({
+    inicio, fim, dias, usuarios, matriz,
+    totais_por_usuario: totaisUser, totais_por_dia: totaisDia,
+    total_geral: totalGeral, n_colaboradores: nColab,
+    media_diaria_por_colab: Math.round(media_diaria_por_colab * 10) / 10,
+    ranking,
+  });
+});
+
+// Historico detalhado (rastreabilidade): ultimas acoes, com antes->depois.
+app.get("/api/gerencial/atividades", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso gerencial." }, 403);
+  const { inicio, fim } = intervaloDatas(c);
+  let limit = toInt(c.req.query("limit"), 200);
+  if (limit <= 0 || limit > 1000) limit = 200;
+  const params: any[] = [inicio, fim];
+  let filtroUser = "";
+  const usersQ = String(c.req.query("usuarios") || "").trim();
+  const usersSel = usersQ ? usersQ.split(",").map((s) => normUser(s)).filter(Boolean) : [];
+  if (usersSel.length) {
+    filtroUser = ` AND usuario IN (${usersSel.map(() => "?").join(",")})`;
+    params.push(...usersSel);
+  }
+  params.push(limit);
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, ts, dia, usuario, acao, empresa_id, empresa_nome, alvo_id, campo, valor_antes, valor_depois, origem
+       FROM auditoria
+      WHERE dia BETWEEN ? AND ?${filtroUser}
+      ORDER BY id DESC LIMIT ?`
+  ).bind(...params).all<Row>();
+  return c.json(results ?? []);
+});
+
+// Colaboradores presentes na auditoria (para povoar o filtro).
+app.get("/api/gerencial/colaboradores", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso gerencial." }, 403);
+  const { results } = await c.env.DB.prepare(
+    `SELECT DISTINCT usuario FROM auditoria
+      WHERE origem='humano' AND usuario IS NOT NULL AND TRIM(usuario)<>''
+      ORDER BY usuario COLLATE NOCASE`
+  ).all<Row>();
+  return c.json((results ?? []).map((r) => String(r.usuario)));
+});
+
 // ---- filiais ----
 app.post("/api/empresas/:eid{[0-9]+}/filiais", async (c) => {
   const eid = Number(c.req.param("eid"));
   const data = await jsonBody(c);
-  await c.env.DB
+  const res = await c.env.DB
     .prepare("INSERT INTO filiais (empresa_id,nome,cnpj,endereco,cidade,uf,telefone,obs) VALUES (?,?,?,?,?,?,?,?)")
     .bind(eid, limpar(data.nome) ?? null, limpar(data.cnpj) ?? null, limpar(data.endereco) ?? null,
       limpar(data.cidade) ?? null, (limpar(data.uf) || "").toUpperCase(),
@@ -773,17 +1008,30 @@ app.post("/api/empresas/:eid{[0-9]+}/filiais", async (c) => {
   await c.env.DB
     .prepare("UPDATE empresas SET qtd_filiais=(SELECT COUNT(*) FROM filiais WHERE empresa_id=?) WHERE id=?")
     .bind(eid, eid).run();
+  const emp = await c.env.DB.prepare("SELECT razao_social,nome_fantasia FROM empresas WHERE id=?").bind(eid).first<Row>();
+  await registrarAuditoria(c, {
+    acao: "filial_nova", empresa_id: eid,
+    empresa_nome: emp ? String(emp.razao_social || emp.nome_fantasia || "") : null,
+    alvo_id: Number((res as any)?.meta?.last_row_id) || null, depois: limpar(data.nome) || null,
+  });
   return c.json({ ok: true }, 201);
 });
 
 app.delete("/api/filiais/:fid{[0-9]+}", async (c) => {
   const fid = Number(c.req.param("fid"));
-  const row = await c.env.DB.prepare("SELECT empresa_id FROM filiais WHERE id=?").bind(fid).first<Row>();
+  const row = await c.env.DB.prepare(
+    "SELECT f.empresa_id, f.nome, e.razao_social, e.nome_fantasia FROM filiais f LEFT JOIN empresas e ON e.id=f.empresa_id WHERE f.id=?")
+    .bind(fid).first<Row>();
   await c.env.DB.prepare("DELETE FROM filiais WHERE id=?").bind(fid).run();
   if (row) {
     await c.env.DB
       .prepare("UPDATE empresas SET qtd_filiais=(SELECT COUNT(*) FROM filiais WHERE empresa_id=?) WHERE id=?")
       .bind(row.empresa_id, row.empresa_id).run();
+    await registrarAuditoria(c, {
+      acao: "filial_remove", empresa_id: Number(row.empresa_id),
+      empresa_nome: String(row.razao_social || row.nome_fantasia || ""),
+      alvo_id: fid, antes: String(row.nome ?? ""),
+    });
   }
   return c.json({ ok: true });
 });
@@ -994,7 +1242,7 @@ app.get("/api/follow-up", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
             telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
-            data_ultimo_contato, faixa_potencial
+            data_ultimo_contato, faixa_potencial, origem_contato
        FROM empresas`
   ).all<Row>();
 
@@ -1010,6 +1258,7 @@ app.get("/api/follow-up", async (c) => {
       proxima_acao: r.proxima_acao || "", proxima_acao_data: pad,
       data_ultimo_contato: String(r.data_ultimo_contato || "").slice(0, 10),
       faixa_potencial: r.faixa_potencial || "",
+      origem_contato: r.origem_contato || "",
     };
     if (pad) {
       const d = diasSinal(hojeStr, pad); // <0 vencida, 0 hoje, >0 futura
@@ -1321,6 +1570,22 @@ function fonteConfigurada(env: Env): boolean {
   return !!(env.SERPER_API_KEY || env.PLACES_API_KEY);
 }
 
+// Perfil PROVAVEL do candidato, inferido de evidencias no nome/categoria — nunca
+// do simples fato de ser internet/telecom. E apenas um HINT (marcado "a confirmar")
+// para o vendedor: so sugere "Starlink" quando a palavra aparece de fato, e empresas
+// de internet/telecom viram "Infraestrutura de redes", NAO revenda Starlink.
+// Retorna "" quando nao ha evidencia. Atende a regra 4 do brief de prospeccao.
+function perfilProvavel(nome: string, tipo: string): string {
+  const t = L.norm(`${nome} ${tipo}`);
+  const perfis: string[] = [];
+  if (/starlink/.test(t)) perfis.push("Starlink");
+  if (/\bvsat\b|banda ku|\bku\b|via satelite|satelite/.test(t)) perfis.push("Antenas VSAT/KU (satélite)");
+  if (/cftv|camera|monitorament|alarme|seguranca eletronica|vigilancia/.test(t)) perfis.push("Segurança eletrônica");
+  // Fallback generico so quando nao casou nenhum perfil-alvo acima.
+  if (!perfis.length && /provedor|internet|telecom|fibra|\brede/.test(t)) perfis.push("Infraestrutura de redes / internet");
+  return perfis.join(" · ");
+}
+
 // Insere um candidato na base evitando duplicidade (telefone OU nome+cidade).
 // Atualiza o indice em memoria para o proximo candidato do mesmo lote. Sem CNPJ.
 async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promise<"criado" | "dup"> {
@@ -1333,6 +1598,8 @@ async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promi
   if (cand.rede) obs.push(`Rede social: ${cand.rede}${cand.handle ? ` (${cand.handle})` : ""}`);
   if (cand.fonte) obs.push(`Fonte: ${cand.fonte}`);
   if (cand.tipo && !cand.rede) obs.push(`Categoria: ${cand.tipo}`);
+  const perfil = perfilProvavel(nome, String(cand.tipo || ""));
+  if (perfil) obs.push(`Perfil provável (a confirmar): ${perfil}`);
   if (cand.auto) obs.push(`Encontrado pela varredura automática em ${String(cand.encontrado_em || hoje()).slice(0, 10)}`);
   const e = montarEmpresa({
     razao_social: nome,
@@ -1527,7 +1794,18 @@ app.post("/api/prospeccao/salvar", async (c) => {
 // na tabela meta. Em alguns dias cobre toda a regiao e recomeca.
 // --------------------------------------------------------------------------
 const CRON_BATCH = 10;                                  // cidades por execucao (Google Maps) — ~300 créditos Serper/mês
-const CRON_TERMOS = ["Starlink internet via satélite"]; // termos por cidade (1 = mais barato)
+// Termos-alvo da varredura, cobrindo os 3 perfis que queremos (Starlink, antenas
+// via satelite VSAT/KU e seguranca eletronica). Para NAO multiplicar o custo, cada
+// rodada usa UM termo (rotacionado pelo cursor cron_termo_idx): o custo diario
+// continua = CRON_BATCH, e a lista inteira e coberta ao longo dos dias.
+const CRON_TERMOS = [
+  "revenda Starlink",
+  "instalação de Starlink antena",
+  "antena VSAT internet via satélite",
+  "instalação de antena banda KU satélite",
+  "instalação de CFTV e câmeras de segurança",
+  "segurança eletrônica alarmes e monitoramento",
+];
 // Varredura em redes sociais (Instagram/Facebook) na mesma execucao diaria.
 // Cursor proprio e lote menor para controlar custo: CRON_SOCIAL_BATCH cidades/dia
 // = +CRON_SOCIAL_BATCH créditos Serper/dia. Ponha 0 para desligar a parte social.
@@ -1621,29 +1899,31 @@ async function runCron(env: Env): Promise<Row> {
     lote.push(cidades[(cursor + i) % cidades.length]);
   }
 
+  // Um termo por rodada, rotacionado (ver CRON_TERMOS) — custo diario = CRON_BATCH.
+  const termoIdx = parseInt((await metaGet(db, "cron_termo_idx")) || "0", 10) || 0;
+  const termo = CRON_TERMOS[termoIdx % CRON_TERMOS.length];
+
   const idx = await baseIndex(db);
   let pendentes = 0, jaNaBase = 0, jaPendentes = 0, excluidos = 0, buscas = 0, erros = 0;
   for (const alvo of lote) {
-    for (const termo of CRON_TERMOS) {
-      buscas += 1;
-      let candidatos: Row[];
-      try {
-        ({ candidatos } = await buscarFonte(env, montarTextQuery(termo, alvo.municipio, "", alvo.uf)));
-      } catch {
-        erros += 1;
-        continue;
-      }
-      for (const cand of candidatos) {
-        if (!cand.nome) continue;
-        if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
-        if (alvo.uf && cand.uf && cand.uf !== alvo.uf) continue;
-        // Endereco curto do Serper as vezes nao traz cidade/UF: usa a cidade-alvo da varredura.
-        if (!cand.cidade) cand.cidade = alvo.municipio;
-        if (!cand.uf) cand.uf = alvo.uf;
-        // Ja esta na base? nao vira pendente.
-        if (achaDup(idx, cand.nome, cand.cidade, cand.telefone || "") !== null) { jaNaBase += 1; continue; }
-        if (await inserePendente(db, cand)) pendentes += 1; else jaPendentes += 1;
-      }
+    buscas += 1;
+    let candidatos: Row[];
+    try {
+      ({ candidatos } = await buscarFonte(env, montarTextQuery(termo, alvo.municipio, "", alvo.uf)));
+    } catch {
+      erros += 1;
+      continue;
+    }
+    for (const cand of candidatos) {
+      if (!cand.nome) continue;
+      if (nomeBloqueado(cand.nome)) { excluidos += 1; continue; }
+      if (alvo.uf && cand.uf && cand.uf !== alvo.uf) continue;
+      // Endereco curto do Serper as vezes nao traz cidade/UF: usa a cidade-alvo da varredura.
+      if (!cand.cidade) cand.cidade = alvo.municipio;
+      if (!cand.uf) cand.uf = alvo.uf;
+      // Ja esta na base? nao vira pendente.
+      if (achaDup(idx, cand.nome, cand.cidade, cand.telefone || "") !== null) { jaNaBase += 1; continue; }
+      if (await inserePendente(db, cand)) pendentes += 1; else jaPendentes += 1;
     }
   }
 
@@ -1676,14 +1956,15 @@ async function runCron(env: Env): Promise<Row> {
   const stats: Row = {
     ok: true, data: agora(), buscas, pendentes, pendentes_social: pendentesSocial,
     ja_na_base: jaNaBase, ja_pendentes: jaPendentes, excluidos, erros,
-    cidades: lote.map((a) => `${a.municipio}/${a.uf}`),
+    termo, cidades: lote.map((a) => `${a.municipio}/${a.uf}`),
     cursor_de: cursor, cursor_ate: novoCursor, total_cidades: cidades.length,
   };
   await metaSet(db, "cron_cursor", String(novoCursor));
+  await metaSet(db, "cron_termo_idx", String((termoIdx + 1) % CRON_TERMOS.length));
   await metaSet(db, "cron_last_run", agora());
   await metaSet(db, "cron_last_stats", JSON.stringify(stats));
   console.log(
-    `Cron prospecção: ${buscas} buscas em ${lote.length} cidades · ` +
+    `Cron prospecção: ${buscas} buscas em ${lote.length} cidades · termo "${termo}" · ` +
     `${pendentes} pendentes novos, ${jaNaBase} já na base, ${jaPendentes} já pendentes, ` +
     `${excluidos} excluídos, ${erros} erros · cursor ${cursor}→${novoCursor}/${cidades.length}`
   );
@@ -1928,6 +2209,12 @@ app.post("/api/import", async (c) => {
   }
 
   const criados = await inserirEmpresasLote(c.env.DB, novos, erros);
+  // Import e acao em lote: registra como origem 'sistema' (NAO conta como
+  // produtividade humana no painel Gerencial), apenas para rastreabilidade.
+  await registrarAuditoria(c, {
+    acao: "import", origem: "sistema",
+    depois: `criados=${criados}, atualizados=${atualizados}, ignorados=${ignorados}`,
+  });
   return c.json({ criados, atualizados, ignorados, erros });
 });
 

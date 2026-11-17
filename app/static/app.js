@@ -609,15 +609,23 @@ const App = (() => {
 
       <div class="sec"><h4>Histórico de contatos</h4>
         <div class="timeline">${contatos || '<span class="hint">Sem registros ainda.</span>'}</div>
-        <div class="grid2" style="margin-top:12px">
-          <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
-          <div class="fld"><label>Data</label><input type="date" id="ct-data"></div>
-          <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "")}</select></div>
-          <div class="fld"><label>Próxima ação (data)</label><input type="date" id="ct-pad"></div>
-          <div class="fld full"><label>Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
-          <div class="fld full"><label>Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
+
+        <button class="btn" id="ct-abrir" style="margin-top:12px;background:var(--soft);color:var(--brand)" onclick="App.novoContato()">+ Registrar contato</button>
+
+        <div id="ct-form" style="display:none;margin-top:12px">
+          <div class="grid2">
+            <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
+            <div class="fld"><label>Data</label><input type="date" id="ct-data"></div>
+            <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "")}</select></div>
+            <div class="fld"><label>Próxima ação (data)</label><input type="date" id="ct-pad"></div>
+            <div class="fld full"><label>Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
+            <div class="fld full"><label>Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+            <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.cancelarContato()">Cancelar</button>
+            <button class="btn primary" id="ct-salvar" onclick="App.addContato()">Salvar contato</button>
+          </div>
         </div>
-        <button class="btn" style="margin-top:8px;background:var(--soft);color:var(--brand)" onclick="App.addContato()">+ Registrar contato</button>
       </div>`;
   }
 
@@ -687,15 +695,45 @@ const App = (() => {
     await abrirFicha(cur.id);
   }
 
+  // Abre o formulário de novo contato (passo 1). O registro só é efetivado
+  // ao clicar em "Salvar contato" (App.addContato).
+  function novoContato() {
+    const f = $("ct-form"); if (f) f.style.display = "";
+    const b = $("ct-abrir"); if (b) b.style.display = "none";
+    const t = $("ct-tipo"); if (t) t.focus();
+  }
+  function cancelarContato() {
+    const f = $("ct-form"); if (f) f.style.display = "none";
+    const b = $("ct-abrir"); if (b) b.style.display = "";
+    ["ct-tipo", "ct-data", "ct-resp", "ct-pad", "ct-resumo", "ct-pa"].forEach(id => {
+      const el = $(id); if (!el) return;
+      if (el.tagName === "SELECT") el.selectedIndex = 0; else el.value = "";
+    });
+  }
   async function addContato() {
+    const btn = $("ct-salvar");
     const body = {
       tipo: $("ct-tipo").value, data: $("ct-data").value, responsavel: $("ct-resp").value,
       resumo: $("ct-resumo").value, proxima_acao: $("ct-pa").value, proxima_acao_data: $("ct-pad").value,
     };
     if (!body.resumo && !body.tipo) { toast("Descreva o contato."); return; }
-    await fetch("/api/empresas/" + cur.id + "/contatos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    toast("Contato registrado.");
-    await abrirFicha(cur.id);
+    if (btn) { btn.disabled = true; btn.textContent = "Salvando…"; }
+    try {
+      const r = await fetch("/api/empresas/" + cur.id + "/contatos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) {
+        const js = await r.json().catch(() => ({}));
+        toast(js.erro || "Não foi possível registrar o contato.");
+        if (btn) { btn.disabled = false; btn.textContent = "Salvar contato"; }
+        return;
+      }
+      toast("Contato registrado.");
+      // Mantém a ficha aberta: re-renderiza a ficha, que volta ao estado inicial
+      // (formulário fechado) já com o novo contato na timeline.
+      await abrirFicha(cur.id);
+    } catch (e) {
+      toast("Não foi possível registrar o contato.");
+      if (btn) { btn.disabled = false; btn.textContent = "Salvar contato"; }
+    }
   }
   async function delContato(id) {
     await fetch("/api/contatos/" + id, { method: "DELETE" });
@@ -764,7 +802,7 @@ const App = (() => {
   return {
     init, view, ufMudou, limparFiltros, buscaDebounced, tema,
     abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus,
-    addContato, delContato, addFilial, delFilial, excluir, realce,
+    novoContato, cancelarContato, addContato, delContato, addFilial, delFilial, excluir, realce,
     exportar, modelo, abrirImport, fazerImport,
   };
 })();

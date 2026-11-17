@@ -36,6 +36,22 @@ export const CANAIS = ["Telecom", "Varejo (mercantil)"];
 // Responsaveis (equipe de prospeccao)
 export const RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita"];
 
+// Mapa login (username) -> responsavel (carteira). Define quem, ao entrar, ja abre
+// o Follow-up filtrado pela propria carteira. Quem NAO esta aqui ve tudo (geral):
+// bradel (admin), jossy, romulo, sunamita, elionay, alessandra.
+// Sunamita cobre varejo em todos os estados, por isso entra como geral (ve tudo).
+const RESP_POR_LOGIN: Record<string, string> = {
+  leandro: "Leandro",
+  ronaldo: "Ronaldo",
+  mateus: "Mateus",
+  luiscarlos: "Luis Carlos",
+};
+
+// Responsavel (carteira) de um login, ou "" quando o login ve tudo (geral).
+export function responsavelDoLogin(username?: string | null): string {
+  return RESP_POR_LOGIN[(username || "").trim().toLowerCase()] || "";
+}
+
 // --------------------------------------------------------------------------
 // Regra geral de atribuicao de responsavel (equipe de prospeccao) por territorio.
 // Base: por UF. Excecoes: certas microrregioes ficam com outro responsavel.

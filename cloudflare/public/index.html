@@ -22,7 +22,8 @@
     <button id="tab-mapa" class="on" onclick="App.view('mapa')" data-tip="Mapa interativo das revendas por região, com mapa de calor por microrregião e filtros à esquerda.">Mapa</button>
     <button id="tab-painel" onclick="App.view('painel')" data-tip="Indicadores e gráficos da base: status, cobertura VSM, funil de conversão e evolução mensal.">Dashboard</button>
     <button id="tab-followup" onclick="App.view('followup')" data-tip="Agenda de contatos: o que está vencido, o que fazer hoje e quais prospects esfriaram.">Follow-up</button>
-    <button id="tab-prospec" onclick="App.view('prospec')" data-tip="Busca novas revendas Starlink na web (Google Maps e redes sociais) por região e as traz para a base.">Prospecção Starlink</button>
+    <button id="tab-prospec" onclick="App.view('prospec')" data-tip="Busca na web (Google Maps e redes sociais) potenciais parceiros por região — Starlink, antenas via satélite (VSAT/KU) e segurança eletrônica — e os traz para a base.">Prospecção Starlink</button>
+    <button id="tab-gerencial" hidden onclick="App.view('gerencial')" data-tip="Produtividade comercial da equipe: quantas atualizações cada colaborador fez por dia. Acesso restrito.">Gerencial</button>
   </nav>
 
   <div class="topactions">
@@ -122,6 +123,9 @@
   <!-- ===================== VISÃO DASHBOARD ===================== -->
   <div class="view-painel hidden" id="view-painel"></div>
 
+  <!-- ===================== VISÃO GERENCIAL ===================== -->
+  <div class="view-gerencial hidden" id="view-gerencial"></div>
+
   <!-- ===================== VISÃO FOLLOW-UP ===================== -->
   <div class="view-followup hidden" id="view-followup">
     <section class="card">
@@ -139,13 +143,13 @@
   <div class="view-prospec hidden" id="view-prospec">
     <section class="card prospec-search">
       <div class="hd">
-        <h2>Buscar empresas e vendedores Starlink</h2>
-        <span class="map-ctx">Busca na web (Google) por região · prioriza lojas locais e revendedores independentes · grandes redes e distribuidoras generalistas são excluídas automaticamente</span>
+        <h2>Buscar empresas e potenciais parceiros</h2>
+        <span class="map-ctx">Busca na web (Google) por região · foco em quem já atua com Starlink, antenas via satélite (VSAT/KU) e segurança eletrônica · prioriza lojas locais e instaladores · grandes redes e distribuidoras generalistas são excluídas automaticamente</span>
       </div>
       <div class="bd">
         <div class="prospec-form">
-          <label class="fld full"><span>O que buscar <span class="info" tabindex="0" role="button" aria-label="Ajuda: O que buscar" data-tip="Termo pesquisado na web. Escreva como um cliente procuraria (ex.: 'onde comprar Starlink', 'revenda de antena'). Use as sugestões abaixo para começar."></span></span>
-            <input id="p-termo" placeholder="Ex.: onde comprar Starlink · revenda de antena Starlink · internet via satélite">
+          <label class="fld full"><span>O que buscar <span class="info" tabindex="0" role="button" aria-label="Ajuda: O que buscar" data-tip="Termo pesquisado na web. Use as sugestões abaixo (Starlink, antenas via satélite ou segurança eletrônica) ou escreva como o parceiro se descreveria (ex.: 'instalador de antena Starlink', 'empresa de CFTV')."></span></span>
+            <input id="p-termo" placeholder="Ex.: revenda Starlink · instalador de antena · VSAT · CFTV e câmeras de segurança">
           </label>
           <label class="fld"><span>Estado</span><select id="p-uf" onchange="App.pUfMudou()"></select></label>
           <label class="fld"><span>Cidade</span>
@@ -163,12 +167,20 @@
           <button class="btn primary" id="p-buscar" onclick="App.buscarProspec()">Buscar</button>
         </div>
         <div class="prospec-sugs">
-          <span>Sugestões:</span>
-          <button class="chip-btn" onclick="App.sugProspec('onde comprar Starlink')">onde comprar Starlink</button>
-          <button class="chip-btn" onclick="App.sugProspec('revenda de antena Starlink')">revenda de antena Starlink</button>
-          <button class="chip-btn" onclick="App.sugProspec('loja de internet via satélite')">internet via satélite</button>
-          <button class="chip-btn" onclick="App.sugProspec('instalação de Starlink')">instalação de Starlink</button>
-          <button class="chip-btn" onclick="App.sugProspecSocial('loja de informática')">loja no Instagram</button>
+          <span class="sug-grp">Starlink:</span>
+          <button class="chip-btn" onclick="App.sugProspec('revenda Starlink')">revenda Starlink</button>
+          <button class="chip-btn" onclick="App.sugProspec('instalador de antena Starlink')">instalador Starlink</button>
+          <button class="chip-btn" onclick="App.sugProspec('assistência técnica Starlink')">assistência Starlink</button>
+          <span class="sug-grp">Satélite:</span>
+          <button class="chip-btn" onclick="App.sugProspec('antena VSAT internet via satélite')">antenas VSAT</button>
+          <button class="chip-btn" onclick="App.sugProspec('instalação de antena banda KU satélite')">antenas banda KU</button>
+          <button class="chip-btn" onclick="App.sugProspec('internet via satélite')">internet via satélite</button>
+          <span class="sug-grp">Segurança eletrônica:</span>
+          <button class="chip-btn" onclick="App.sugProspec('instalação de CFTV e câmeras de segurança')">CFTV / câmeras</button>
+          <button class="chip-btn" onclick="App.sugProspec('sistemas de monitoramento e alarmes')">monitoramento / alarmes</button>
+          <button class="chip-btn" onclick="App.sugProspec('empresa de segurança eletrônica')">segurança eletrônica</button>
+          <span class="sug-grp">Redes sociais:</span>
+          <button class="chip-btn" onclick="App.sugProspecSocial('instalador de antena Starlink CFTV')">buscar no Instagram</button>
         </div>
         <div class="prospec-auto" id="p-auto">
           <span class="pa-txt" id="p-auto-txt">Varredura automática diária — carregando status…</span>
@@ -211,7 +223,7 @@
       </div>
       <div class="bd">
         <div id="p-lista" class="prospec-list">
-          <div class="empty">Faça uma busca para encontrar empresas e vendedores Starlink na região.</div>
+          <div class="empty">Faça uma busca para encontrar empresas e potenciais parceiros na região — Starlink, antenas via satélite ou segurança eletrônica.</div>
         </div>
       </div>
     </section>

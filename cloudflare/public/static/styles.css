@@ -322,6 +322,8 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .prospec-form input,.prospec-form select{padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--soft);width:100%}
 .prospec-form .btn{height:38px;white-space:nowrap}
 .prospec-sugs{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;font-size:12.5px;color:var(--muted)}
+.prospec-sugs .sug-grp{font-weight:700;color:var(--muted);margin-left:6px}
+.prospec-sugs .sug-grp:first-child{margin-left:0}
 .chip-btn{background:var(--accent-weak);color:var(--accent);border:0;border-radius:20px;padding:5px 12px;font-size:12.5px;font-weight:600}
 .chip-btn:hover{filter:brightness(.97)}
 .p-info{font-size:12px;color:var(--muted)}
@@ -411,8 +413,21 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .fu-prox .fu-row{border-left:3px solid var(--accent)}
 .fu-parado .fu-row{border-left:3px solid #9aa6b5}
 .fu-main{min-width:0}
-.fu-main b{display:block;font-size:13.5px}
+.fu-head{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.fu-main b{font-size:13.5px}
 .fu-meta{font-size:12px;color:var(--muted)}
+/* Badge de origem de aquisição — cor fixa por origem, discreta e legível.
+   Convive com a etiqueta de prioridade (que fica na coluna fu-side). */
+.fu-org{font-size:10.5px;font-weight:700;line-height:1.5;padding:1px 7px;border-radius:999px;
+  white-space:nowrap;letter-spacing:.01em;flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis}
+.fu-org.org-vsm{background:#e7f0fd;color:#1d6fd6}
+.fu-org.org-form{background:#f1e9fb;color:#7b3fc4}
+.fu-org.org-prosp{background:#e0f4f1;color:#0d8a74}
+.fu-org.org-indic{background:#e8f6e9;color:#2f8f3e}
+.fu-org.org-evento{background:#fde9f1;color:#c43f7b}
+.fu-org.org-inbound{background:#e3f2fb;color:#1783b0}
+.fu-org.org-parc{background:#eceafb;color:#5b4fd1}
+.fu-org.org-outro{background:#eef2f7;color:#64748b}
 .fu-acao{font-size:12.5px;color:var(--fg);margin-top:3px}
 .fu-side{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex-shrink:0;text-align:right}
 .fu-tag{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--muted);white-space:nowrap}
@@ -502,3 +517,49 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .userlist .pend{font-size:11px;font-weight:700;color:var(--laranja);background:rgba(232,129,31,.12);
   border:1px solid rgba(232,129,31,.4);border-radius:999px;padding:1px 8px;white-space:nowrap}
 .userlist .okb{font-size:11px;color:var(--muted)}
+.userlist .ger-perm{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);white-space:nowrap;cursor:pointer}
+.userlist .ger-perm input{accent-color:var(--accent);cursor:pointer}
+
+/* ===================== Aba GERENCIAL ===================== */
+.view-gerencial{display:flex;flex-direction:column;gap:14px}
+.view-gerencial .card.wide{width:100%}
+.ger-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px}
+@media(max-width:900px){.ger-grid{grid-template-columns:1fr}}
+
+.ger-filtros .bd{display:flex;flex-direction:column;gap:12px}
+.ger-frow{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ger-flbl{font-size:12px;font-weight:700;color:var(--muted);min-width:96px}
+.ger-chips{display:flex;gap:6px;flex-wrap:wrap}
+.ger-chip{border:1px solid var(--line);background:var(--soft);color:var(--fg);border-radius:999px;
+  padding:5px 12px;font-size:12.5px;font-weight:600}
+.ger-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.ger-custom{display:flex;gap:16px;flex-wrap:wrap;padding-left:108px}
+@media(max-width:700px){.ger-custom{padding-left:0}}
+.ger-custom label{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.ger-custom input{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 8px}
+.ger-colabs{display:flex;gap:8px 14px;flex-wrap:wrap}
+.ger-colab{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;color:var(--fg);cursor:pointer}
+.ger-colab input{accent-color:var(--accent);cursor:pointer}
+.ger-colab.ger-all{font-weight:700}
+.ger-empty-inline{font-size:12px;color:var(--muted)}
+
+.ger-tablewrap{overflow-x:auto}
+.ger-table{border-collapse:collapse;width:100%;font-size:13px}
+.ger-table th,.ger-table td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.ger-table th.num,.ger-table td.num{text-align:right;font-family:var(--fnum)}
+.ger-table thead th{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;position:sticky;top:0;background:var(--panel)}
+.ger-table .ger-nome{font-weight:600}
+.ger-table .ger-tot{font-weight:700}
+.ger-table tfoot td{border-top:2px solid var(--line);border-bottom:0;background:var(--soft);font-weight:700}
+.ger-table .ger-cel{color:var(--fg)}
+.ger-ativ-table td{white-space:normal}
+.ger-ativ-table td.nowrap{white-space:nowrap;font-family:var(--fnum);font-size:12px;color:var(--muted)}
+.ger-tag-sis{font-size:10px;font-weight:700;color:var(--muted);background:var(--soft);border:1px solid var(--line);
+  border-radius:999px;padding:0 6px;margin-left:4px}
+
+.ger-rank{display:flex;flex-direction:column;gap:9px}
+.ger-rank-row{display:grid;grid-template-columns:110px 1fr 38px;align-items:center;gap:8px}
+.ger-rank-nome{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ger-rank-bar{background:var(--soft);border-radius:999px;height:14px;overflow:hidden}
+.ger-rank-bar i{display:block;height:100%;background:var(--accent);border-radius:999px;transition:width .25s ease}
+.ger-rank-val{font-family:var(--fnum);font-size:12.5px;font-weight:700;text-align:right}

@@ -19,9 +19,15 @@ const App = (() => {
   let PEND = [];           // pendentes da varredura automática (aguardando revisão)
   let FU = null;           // dados do follow-up carregados (/api/follow-up)
   let fuUF = "";           // filtro de estado aplicado no follow-up ("" = todos)
-  let ME = null;           // usuário logado (/api/me): { username, admin, must_change }
+  let fuResp = null;       // filtro de responsável no follow-up (null=ainda não iniciado; ""=todos)
+  let ME = null;           // usuário logado (/api/me): { username, admin, must_change, responsavel }
   let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
   let apMetric = "empresas"; // métrica ativa no painel de indicadores ao lado do mapa
+  let gerPeriodo = "7d";     // preset de período na aba Gerencial (hoje/ontem/7d/30d/custom)
+  let gerInicio = "";        // intervalo personalizado (YYYY-MM-DD)
+  let gerFim = "";
+  let gerUsers = [];         // colaboradores selecionados ([] = todos)
+  let gerColabs = [];        // colaboradores disponíveis (/api/gerencial/colaboradores)
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -220,6 +226,11 @@ const App = (() => {
     $("uname").textContent = nome + (ME.admin ? " · admin" : "");
     $("uava").textContent = (nome[0] || "?");
     $("menu-usuarios").hidden = !ME.admin;
+    // Aba Gerencial: só aparece para quem tem permissão (admin sempre tem).
+    const temGer = !!(ME.perm_gerencial || ME.admin);
+    if ($("tab-gerencial")) $("tab-gerencial").hidden = !temGer;
+    // Follow-up abre filtrado pela carteira do usuário (quem é geral vê tudo: "").
+    if (fuResp === null) fuResp = ME.responsavel || "";
     if (ME.must_change) forcarPrimeiroAcesso();
   }
   function toggleUserMenu(ev) {
@@ -295,6 +306,9 @@ const App = (() => {
       <li>
         <span class="uava" style="width:26px;height:26px">${esc((u.username || "?")[0])}</span>
         <span class="un">${esc(u.username)} ${u.must_change ? '<span class="pend">senha padrão</span>' : '<span class="okb">senha própria</span>'}</span>
+        <label class="ger-perm" data-tip="Libera o acesso à aba Gerencial (produtividade). Não altera as demais permissões.">
+          <input type="checkbox" ${Number(u.perm_gerencial) ? "checked" : ""} onchange="App.toggleGerencial('${esc(u.username)}', this.checked)"> Gerencial
+        </label>
         <button class="lnk" onclick="App.resetUsuario('${esc(u.username)}')" data-tip="Volta para a senha padrão: a pessoa redefine no próximo acesso.">resetar</button>
         <button class="lnk danger" onclick="App.delUsuario('${esc(u.username)}')">remover</button>
       </li>`).join("");
@@ -328,6 +342,13 @@ const App = (() => {
     const r = await fetch("/api/usuarios/" + encodeURIComponent(username), { method: "DELETE" });
     if (!r.ok) { toast("Falha ao remover."); return; }
     toast("Usuário removido."); await recarregarUsuarios();
+  }
+  async function toggleGerencial(username, ativo) {
+    const r = await fetch("/api/usuarios/" + encodeURIComponent(username) + "/gerencial", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ativo }),
+    });
+    if (!r.ok) { toast("Falha ao alterar acesso gerencial."); await recarregarUsuarios(); return; }
+    toast(ativo ? "Acesso gerencial liberado: " + username : "Acesso gerencial removido: " + username);
   }
 
   // Carrega os municípios das UFs de atuação (p/ reconhecer a 1ª cidade em campos
@@ -1059,7 +1080,7 @@ const App = (() => {
       <div class="card"><div class="hd"><h2>Distribuição por estado</h2></div><div class="bd">${chart(ufData, () => "var(--accent)")}</div></div>
       <div class="card wide"><div class="hd"><h2>Cobertura VSM por estado${infoIco("Quanto do universo de revendas do portal Vivensis/VSM já está mapeado na base, por estado. Barra = mapeadas ÷ universo conhecido.", "Cobertura VSM")}</h2></div><div class="bd">
         ${chartCobertura(d.cobertura_vsm)}
-        <div class="l" style="opacity:.7;margin-top:8px">${d.mapeadas_vsm_total || 0} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas${(d.total - (d.mapeadas_vsm_total || 0)) > 0 ? ` · + ${d.total - (d.mapeadas_vsm_total || 0)} empresas de outras origens (fora do %)` : ""}.</div>
+        <div class="l" style="opacity:.7;margin-top:8px">${d.mapeadas_vsm_total || 0} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas.</div>
       </div></div>
       <div class="card wide"><div class="hd"><h2>Captação por formulário por estado${infoIco("Empresas captadas pela equipe por formulário (origem diferente de VSM), por estado. Barra = volume relativo ao maior estado; % = participação no total captado por formulário.", "Captação por formulário")}</h2></div><div class="bd">
         ${chartOrigemForms(d.cobertura_vsm)}
@@ -1085,12 +1106,243 @@ const App = (() => {
   }
 
   function view(v) {
-    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec" };
-    Object.entries(views).forEach(([k, id]) => $(id).classList.toggle("hidden", k !== v));
-    ["mapa", "painel", "followup", "prospec"].forEach(k => $("tab-" + k).classList.toggle("on", k === v));
+    // Bloqueio de acesso à aba Gerencial (defesa em profundidade: estado/URL).
+    if (v === "gerencial" && !(ME && (ME.perm_gerencial || ME.admin))) v = "mapa";
+    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec", gerencial: "view-gerencial" };
+    Object.entries(views).forEach(([k, id]) => { const el = $(id); if (el) el.classList.toggle("hidden", k !== v); });
+    ["mapa", "painel", "followup", "prospec", "gerencial"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
     if (v === "painel") renderPainel();
     if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
+    if (v === "gerencial") carregarGerencial();
+  }
+
+  // ==================== GERENCIAL (produtividade comercial) ====================
+  const GER_PRESETS = [
+    { k: "hoje", l: "Hoje" }, { k: "ontem", l: "Ontem" },
+    { k: "7d", l: "Últimos 7 dias" }, { k: "30d", l: "Últimos 30 dias" },
+    { k: "custom", l: "Personalizado" },
+  ];
+  const GER_ACAO_LBL = {
+    contato: "Registro de contato", status: "Mudança de status", faixa: "Faixa de potencial",
+    empresa_edit: "Edição da ficha", empresa_nova: "Nova empresa",
+    filial_nova: "Nova filial", filial_remove: "Filial removida",
+    contato_remove: "Contato removido", empresa_remove: "Empresa removida",
+    import: "Importação (sistema)",
+  };
+
+  // Data local (Brasília aproximada pelo fuso do navegador) em YYYY-MM-DD.
+  function gerHoje(off) {
+    const d = new Date();
+    if (off) d.setDate(d.getDate() + off);
+    return d.toISOString().slice(0, 10);
+  }
+  // Resolve o preset em {inicio, fim}.
+  function gerIntervalo() {
+    switch (gerPeriodo) {
+      case "hoje": return { inicio: gerHoje(0), fim: gerHoje(0) };
+      case "ontem": return { inicio: gerHoje(-1), fim: gerHoje(-1) };
+      case "7d": return { inicio: gerHoje(-6), fim: gerHoje(0) };
+      case "30d": return { inicio: gerHoje(-29), fim: gerHoje(0) };
+      case "custom":
+        return { inicio: gerInicio || gerHoje(-6), fim: gerFim || gerHoje(0) };
+      default: return { inicio: gerHoje(-6), fim: gerHoje(0) };
+    }
+  }
+
+  async function carregarGerencial() {
+    // Carrega a lista de colaboradores uma vez (para o filtro).
+    if (!gerColabs.length) {
+      try { gerColabs = await (await fetch("/api/gerencial/colaboradores")).json(); }
+      catch (e) { gerColabs = []; }
+      if (!Array.isArray(gerColabs)) gerColabs = [];
+    }
+    await recarregarGerencial();
+  }
+
+  async function recarregarGerencial() {
+    const box = $("view-gerencial");
+    box.innerHTML = `<div class="card"><div class="bd"><div class="empty">Carregando produtividade…</div></div></div>`;
+    const { inicio, fim } = gerIntervalo();
+    const qs = new URLSearchParams({ inicio, fim });
+    if (gerUsers.length) qs.set("usuarios", gerUsers.join(","));
+    let d;
+    try { d = await (await fetch("/api/gerencial/produtividade?" + qs.toString())).json(); }
+    catch (e) { box.innerHTML = `<div class="card"><div class="bd"><div class="empty">Não foi possível carregar a produtividade.</div></div></div>`; return; }
+    if (d && d.erro) { box.innerHTML = `<div class="card"><div class="bd"><div class="empty">${esc(d.erro)}</div></div></div>`; return; }
+    renderGerencial(d);
+  }
+
+  function renderGerencial(d) {
+    const box = $("view-gerencial");
+    const dias = d.dias || [];
+    const usuarios = d.usuarios || [];
+    const totalEquipe = d.total_geral || 0;
+
+    // ---------- Barra de filtros ----------
+    const presets = GER_PRESETS.map(p =>
+      `<button class="ger-chip${gerPeriodo === p.k ? " on" : ""}" onclick="App.gerPreset('${p.k}')">${esc(p.l)}</button>`).join("");
+    const custom = gerPeriodo === "custom" ? `
+      <div class="ger-custom">
+        <label>De <input type="date" id="ger-ini" value="${esc(gerInicio || d.inicio)}" onchange="App.gerCustom()"></label>
+        <label>Até <input type="date" id="ger-fim" value="${esc(gerFim || d.fim)}" onchange="App.gerCustom()"></label>
+      </div>` : "";
+    const colabOpts = gerColabs.map(u =>
+      `<label class="ger-colab"><input type="checkbox" value="${esc(u)}" ${gerUsers.includes(u) ? "checked" : ""} onchange="App.gerToggleColab('${esc(u)}', this.checked)"> ${esc(u)}</label>`).join("");
+    const filtro = `
+      <div class="card ger-filtros">
+        <div class="bd">
+          <div class="ger-frow">
+            <span class="ger-flbl">Período</span>
+            <div class="ger-chips">${presets}</div>
+          </div>
+          ${custom}
+          <div class="ger-frow">
+            <span class="ger-flbl">Colaboradores</span>
+            <div class="ger-colabs">
+              <label class="ger-colab ger-all"><input type="checkbox" ${gerUsers.length === 0 ? "checked" : ""} onchange="App.gerTodosColab(this.checked)"> Todos</label>
+              ${colabOpts || '<span class="ger-empty-inline">Nenhum colaborador com atividade.</span>'}
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    // ---------- KPIs ----------
+    const kpis = `
+      <div class="card wide"><div class="bd">
+        <div class="statgrid">
+          <div class="stat"><div class="v">${totalEquipe}</div><div class="l">Total de atualizações (equipe)</div></div>
+          <div class="stat"><div class="v">${d.n_colaboradores || 0}</div><div class="l">Colaboradores ativos</div></div>
+          <div class="stat"><div class="v">${(d.media_diaria_por_colab != null ? d.media_diaria_por_colab : 0)}</div><div class="l">Média diária por colaborador</div></div>
+          <div class="stat"><div class="v">${dias.length}</div><div class="l">Dias no período</div></div>
+        </div>
+      </div></div>`;
+
+    if (!totalEquipe) {
+      box.innerHTML = filtro + kpis +
+        `<div class="card wide"><div class="bd"><div class="empty">Nenhuma atualização registrada no período selecionado.</div></div></div>`;
+      return;
+    }
+
+    // ---------- Tabela colaborador × dia ----------
+    const thDias = dias.map(dd => `<th class="num">${esc(rotuloDia(dd))}</th>`).join("");
+    const maxCel = Math.max(1, ...usuarios.flatMap(u => dias.map(dd => (d.matriz[u] && d.matriz[u][dd]) || 0)));
+    const linhas = usuarios.map(u => {
+      const cels = dias.map(dd => {
+        const n = (d.matriz[u] && d.matriz[u][dd]) || 0;
+        const int = n ? (0.12 + 0.6 * (n / maxCel)) : 0;
+        const bg = n ? ` style="background:rgba(47,111,208,${int.toFixed(2)})"` : "";
+        return `<td class="num ger-cel"${bg}>${n || ""}</td>`;
+      }).join("");
+      return `<tr><td class="ger-nome">${esc(u)}</td>${cels}<td class="num ger-tot">${d.totais_por_usuario[u] || 0}</td></tr>`;
+    }).join("");
+    const rodape = dias.map(dd => `<td class="num ger-tot">${d.totais_por_dia[dd] || 0}</td>`).join("");
+    const tabela = `
+      <div class="card wide"><div class="hd"><h2>Produtividade por colaborador${infoIco("Cada célula é a quantidade de atualizações que o colaborador fez naquele dia (horário de Brasília). A cor fica mais forte quanto maior o volume.", "Produtividade por colaborador")}</h2></div>
+        <div class="bd ger-tablewrap">
+          <table class="ger-table">
+            <thead><tr><th>Colaborador</th>${thDias}<th class="num">Total</th></tr></thead>
+            <tbody>${linhas}</tbody>
+            <tfoot><tr><td class="ger-nome">Total da equipe</td>${rodape}<td class="num ger-tot">${totalEquipe}</td></tr></tfoot>
+          </table>
+        </div>
+      </div>`;
+
+    // ---------- Gráfico de produtividade diária ----------
+    const serieDia = dias.map(dd => ({ dia: dd, n: d.totais_por_dia[dd] || 0 }));
+    const grafDia = `
+      <div class="card wide"><div class="hd"><h2>Produtividade diária (equipe)${infoIco("Total de atualizações de toda a equipe por dia no período.", "Produtividade diária")}</h2></div>
+        <div class="bd">${chartDiario(serieDia)}</div></div>`;
+
+    // ---------- Ranking ----------
+    const grafRank = `
+      <div class="card"><div class="hd"><h2>Ranking de colaboradores${infoIco("Total de atualizações de cada colaborador no período, do maior para o menor.", "Ranking")}</h2></div>
+        <div class="bd">${chartRanking(d.ranking || [])}</div></div>`;
+
+    box.innerHTML = filtro + kpis +
+      `<div class="ger-grid">${grafDia}${grafRank}</div>` + tabela +
+      `<div class="card wide"><div class="hd"><h2>Histórico de atividades${infoIco("Cada ação registrada no período, com autor, data/hora e o que mudou. Rastreabilidade: uma linha por ação.", "Histórico de atividades")}</h2></div>
+        <div class="bd" id="ger-ativ"><div class="empty">Carregando histórico…</div></div></div>`;
+    carregarAtividades();
+  }
+
+  // Gráfico de barras verticais: produtividade diária (reusa o visual do .vchart).
+  function chartDiario(serie) {
+    if (!serie || !serie.length) return '<div class="empty">Sem dados.</div>';
+    const max = Math.max(1, ...serie.map(s => s.n));
+    const cols = serie.map(s => {
+      const h = Math.round(s.n / max * 100);
+      return `<div class="vcol">
+        <div class="vbars"><span class="vbar lead" style="height:${h}%" title="${s.n} atualização(ões) em ${esc(rotuloDia(s.dia))}"><em>${s.n || ""}</em></span></div>
+        <div class="vlbl">${esc(rotuloDia(s.dia))}</div>
+      </div>`;
+    }).join("");
+    return `<div class="vchart">${cols}</div>`;
+  }
+
+  // Ranking: barras horizontais por colaborador.
+  function chartRanking(ranking) {
+    if (!ranking || !ranking.length) return '<div class="empty">Sem dados.</div>';
+    const max = Math.max(1, ...ranking.map(r => r.total));
+    return `<div class="ger-rank">` + ranking.map(r => {
+      const w = Math.round(r.total / max * 100);
+      return `<div class="ger-rank-row">
+        <span class="ger-rank-nome">${esc(r.usuario)}</span>
+        <span class="ger-rank-bar"><i style="width:${w}%"></i></span>
+        <span class="ger-rank-val">${r.total}</span>
+      </div>`;
+    }).join("") + `</div>`;
+  }
+
+  async function carregarAtividades() {
+    const alvo = $("ger-ativ");
+    if (!alvo) return;
+    const { inicio, fim } = gerIntervalo();
+    const qs = new URLSearchParams({ inicio, fim, limit: "120" });
+    if (gerUsers.length) qs.set("usuarios", gerUsers.join(","));
+    let rows;
+    try { rows = await (await fetch("/api/gerencial/atividades?" + qs.toString())).json(); }
+    catch (e) { alvo.innerHTML = `<div class="empty">Não foi possível carregar o histórico.</div>`; return; }
+    if (!Array.isArray(rows) || !rows.length) { alvo.innerHTML = `<div class="empty">Sem atividades no período.</div>`; return; }
+    const linhas = rows.map(r => `
+      <tr>
+        <td class="nowrap">${esc(fmtData(r.ts))}</td>
+        <td>${esc(r.usuario || "—")}</td>
+        <td>${esc(GER_ACAO_LBL[r.acao] || r.acao)}${r.origem === "sistema" ? ' <span class="ger-tag-sis">sistema</span>' : ""}</td>
+        <td>${esc(r.empresa_nome || (r.empresa_id ? "#" + r.empresa_id : "—"))}</td>
+        <td>${esc(r.campo || "")}</td>
+      </tr>`).join("");
+    alvo.innerHTML = `
+      <div class="ger-tablewrap">
+        <table class="ger-table ger-ativ-table">
+          <thead><tr><th>Data/hora</th><th>Colaborador</th><th>Ação</th><th>Empresa</th><th>Campo</th></tr></thead>
+          <tbody>${linhas}</tbody>
+        </table>
+      </div>`;
+  }
+
+  // Rótulo curto de dia: "16/11". Ou "qua 16/11" quando o período é longo não é necessário.
+  function rotuloDia(iso) {
+    const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? `${m[3]}/${m[2]}` : String(iso || "");
+  }
+
+  // ---- interações dos filtros ----
+  function gerPreset(k) { gerPeriodo = k; recarregarGerencial(); }
+  function gerCustom() {
+    const i = $("ger-ini"), f = $("ger-fim");
+    if (i) gerInicio = i.value;
+    if (f) gerFim = f.value;
+    recarregarGerencial();
+  }
+  function gerToggleColab(u, on) {
+    if (on) { if (!gerUsers.includes(u)) gerUsers.push(u); }
+    else { gerUsers = gerUsers.filter(x => x !== u); }
+    recarregarGerencial();
+  }
+  function gerTodosColab(on) {
+    if (on) gerUsers = [];
+    recarregarGerencial();
   }
 
   // ==================== FOLLOW-UP / MONITORAR ====================
@@ -1122,10 +1374,18 @@ const App = (() => {
       box.innerHTML = `<div class="empty">Tudo em dia 🎉 — nenhuma ação vencida ou pendente. Marque a "próxima ação" dos prospects na ficha para acompanhá-los aqui.</div>`;
       return;
     }
-    // Estados presentes no follow-up (para o filtro)
-    const ufs = [...new Set(FU_GRUPOS.flatMap(g => d[g.k] || []).map(x => x.uf).filter(Boolean))].sort();
+    // Estados e responsáveis presentes no follow-up (para os filtros)
+    const todos = FU_GRUPOS.flatMap(g => d[g.k] || []);
+    const ufs = [...new Set(todos.map(x => x.uf).filter(Boolean))].sort();
+    const resps = [...new Set(todos.map(x => x.responsavel).filter(Boolean).concat(fuResp ? [fuResp] : []))].sort();
     const filtro = `
       <div class="fu-toolbar">
+        <label class="fu-filtro">Responsável
+          <select id="fu-resp" onchange="App.fuFiltrarResp(this.value)">
+            <option value="">Todos</option>
+            ${resps.map(r => `<option value="${esc(r)}"${r === fuResp ? " selected" : ""}>${esc(r)}</option>`).join("")}
+          </select>
+        </label>
         <label class="fu-filtro">Estado
           <select id="fu-uf" onchange="App.fuFiltrarUF(this.value)">
             <option value="">Todos</option>
@@ -1135,6 +1395,7 @@ const App = (() => {
       </div>`;
     const corpo = FU_GRUPOS.map(g => {
       let lista = d[g.k] || [];
+      if (fuResp) lista = lista.filter(x => (x.responsavel || "") === fuResp);
       if (fuUF) lista = lista.filter(x => (x.uf || "") === fuUF);
       if (!lista.length) return "";
       return `
@@ -1157,6 +1418,29 @@ const App = (() => {
     else { el.hidden = true; }
   }
 
+  // Identificação visual por origem de aquisição. Cada origem tem uma cor fixa
+  // e padronizada (classe CSS .fu-org.org-*). O match é por palavra-chave sobre
+  // a origem normalizada, para que variações e NOVOS contatos caiam na cor certa
+  // automaticamente. Laranja fica reservado ao "retorno no dia" (grupo Para hoje).
+  function origemInfo(origem) {
+    const n = String(origem || "").trim().toLowerCase();
+    if (!n) return null; // sem origem cadastrada: não polui a lista
+    if (n.includes("vsm"))                      return { cls: "org-vsm",    label: "VSM" };
+    if (n.includes("formul"))                   return { cls: "org-form",   label: "Formulário" };
+    if (n.includes("prospec"))                  return { cls: "org-prosp",  label: "Prospecção" };
+    if (n.includes("indica"))                   return { cls: "org-indic",  label: "Indicação" };
+    if (n.includes("evento"))                   return { cls: "org-evento", label: "Evento" };
+    if (n.includes("inbound") || n.includes("site")) return { cls: "org-inbound", label: "Inbound" };
+    if (n.includes("parceiro"))                 return { cls: "org-parc",   label: "Parceiro" };
+    return { cls: "org-outro", label: origem }; // demais origens cadastradas
+  }
+
+  function origemBadge(origem) {
+    const o = origemInfo(origem);
+    if (!o) return "";
+    return `<span class="fu-org ${o.cls}" title="Origem: ${esc(origem)}">${esc(o.label)}</span>`;
+  }
+
   function fuRow(x) {
     const loc = [cidadeCurta(x.cidade), x.uf].filter(Boolean).join(" · ");
     const tel = x.whatsapp || x.telefone || "";
@@ -1171,7 +1455,7 @@ const App = (() => {
     return `
       <div class="fu-row" onclick="App.abrirFicha(${x.id})">
         <div class="fu-main">
-          <b>${esc(x.nome)}</b>
+          <div class="fu-head"><b>${esc(x.nome)}</b>${origemBadge(x.origem_contato)}</div>
           <span class="fu-meta">${esc(loc)}${x.status ? " · " + esc(x.status) : ""}${x.responsavel ? " · " + esc(x.responsavel) : ""}</span>
           ${acao}
         </div>
@@ -1747,15 +2031,23 @@ const App = (() => {
 
       <div class="sec"><h4>Histórico de contatos${infoIco("Registre cada ligação, visita ou mensagem. A 'próxima ação' informada aqui alimenta o Follow-up e a data do último contato.", "Histórico de contatos")}</h4>
         <div class="timeline">${contatos || '<span class="hint">Sem registros ainda.</span>'}</div>
-        <div class="grid2" style="margin-top:12px">
-          <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
-          <div class="fld"><label>Data</label><input type="date" id="ct-data"></div>
-          <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "— eu (quem registra) —")}</select></div>
-          <div class="fld"><label>Próxima ação (data)</label><input type="date" id="ct-pad"></div>
-          <div class="fld full"><label>Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
-          <div class="fld full"><label>Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
+
+        <button class="btn" id="ct-abrir" style="margin-top:12px;background:var(--soft);color:var(--brand)" onclick="App.novoContato()">+ Registrar contato</button>
+
+        <div id="ct-form" style="display:none;margin-top:12px">
+          <div class="grid2">
+            <div class="fld"><label>Tipo</label><select id="ct-tipo">${selOpts(B.tipos_contato, "")}</select></div>
+            <div class="fld"><label>Data</label><input type="date" id="ct-data"></div>
+            <div class="fld"><label>Responsável</label><select id="ct-resp">${selOpts(B.responsaveis, "— eu (quem registra) —")}</select></div>
+            <div class="fld"><label>Próxima ação (data)</label><input type="date" id="ct-pad"></div>
+            <div class="fld full"><label>Resumo</label><input id="ct-resumo" placeholder="O que aconteceu neste contato"></div>
+            <div class="fld full"><label>Próxima ação</label><input id="ct-pa" placeholder="O que fazer a seguir"></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+            <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.cancelarContato()">Cancelar</button>
+            <button class="btn primary" id="ct-salvar" onclick="App.addContato()">Salvar contato</button>
+          </div>
         </div>
-        <button class="btn" style="margin-top:8px;background:var(--soft);color:var(--brand)" onclick="App.addContato()">+ Registrar contato</button>
       </div>`;
   }
 
@@ -1825,15 +2117,46 @@ const App = (() => {
     await abrirFicha(cur.id);
   }
 
+  // Abre o formulário de novo contato (passo 1). O registro só é efetivado
+  // ao clicar em "Salvar contato" (App.addContato).
+  function novoContato() {
+    const f = $("ct-form"); if (f) f.style.display = "";
+    const b = $("ct-abrir"); if (b) b.style.display = "none";
+    const t = $("ct-tipo"); if (t) t.focus();
+  }
+  function cancelarContato() {
+    const f = $("ct-form"); if (f) f.style.display = "none";
+    const b = $("ct-abrir"); if (b) b.style.display = "";
+    ["ct-tipo", "ct-data", "ct-resp", "ct-pad", "ct-resumo", "ct-pa"].forEach(id => {
+      const el = $(id); if (!el) return;
+      if (el.tagName === "SELECT") el.selectedIndex = 0; else el.value = "";
+    });
+  }
   async function addContato() {
+    const btn = $("ct-salvar");
     const body = {
       tipo: $("ct-tipo").value, data: $("ct-data").value, responsavel: $("ct-resp").value,
       resumo: $("ct-resumo").value, proxima_acao: $("ct-pa").value, proxima_acao_data: $("ct-pad").value,
     };
     if (!body.resumo && !body.tipo) { toast("Descreva o contato."); return; }
-    await fetch("/api/empresas/" + cur.id + "/contatos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    toast("Contato registrado.");
-    await abrirFicha(cur.id);
+    if (btn) { btn.disabled = true; btn.textContent = "Salvando…"; }
+    try {
+      const r = await fetch("/api/empresas/" + cur.id + "/contatos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!r.ok) {
+        const js = await r.json().catch(() => ({}));
+        toast(js.erro || "Não foi possível registrar o contato.");
+        if (btn) { btn.disabled = false; btn.textContent = "Salvar contato"; }
+        return;
+      }
+      toast("Contato registrado.");
+      // Mantém a ficha aberta: recarrega a base por baixo e re-renderiza a ficha,
+      // que volta ao estado inicial (formulário fechado) já com o novo contato na timeline.
+      await recarregar();
+      await abrirFicha(cur.id);
+    } catch (e) {
+      toast("Não foi possível registrar o contato.");
+      if (btn) { btn.disabled = false; btn.textContent = "Salvar contato"; }
+    }
   }
   async function delContato(id) {
     await fetch("/api/contatos/" + id, { method: "DELETE" });
@@ -1902,7 +2225,7 @@ const App = (() => {
   return {
     init, view, ufMudou, limparFiltros, buscaDebounced, tema,
     abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus, aplicarFaixaSugerida,
-    addContato, delContato, addFilial, delFilial, excluir, realce,
+    novoContato, cancelarContato, addContato, delContato, addFilial, delFilial, excluir, realce,
     apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
@@ -1910,6 +2233,7 @@ const App = (() => {
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,
+    toggleGerencial, gerPreset, gerCustom, gerToggleColab, gerTodosColab,
   };
 })();
 
