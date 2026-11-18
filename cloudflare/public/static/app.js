@@ -266,7 +266,8 @@ const App = (() => {
     // bloqueia de qualquer forma — isto é só UX). Exportar/Modelo continuam (leitura).
     const consulta = ME.papel === "consulta";
     if ($("btn-novo")) $("btn-novo").hidden = consulta;
-    if ($("btn-import")) $("btn-import").hidden = consulta;
+    // Import em massa: só bradel/jossy (o backend confirma via ME.pode_importar).
+    if ($("btn-import")) $("btn-import").hidden = !ME.pode_importar;
     // Aba Gerencial: só aparece para quem tem permissão (admin sempre tem).
     const temGer = !!(ME.perm_gerencial || ME.admin);
     if ($("tab-gerencial")) $("tab-gerencial").hidden = !temGer;
@@ -1437,7 +1438,7 @@ const App = (() => {
     }).join("");
     const rodape = dias.map(dd => `<td class="num ger-tot">${d.totais_por_dia[dd] || 0}</td>`).join("");
     const tabela = `
-      <div class="card wide"><div class="hd"><h2>Produtividade por colaborador${infoIco("Cada célula é a quantidade de atualizações que o colaborador fez naquele dia (horário de Brasília). A cor fica mais forte quanto maior o volume.", "Produtividade por colaborador")}</h2></div>
+      <div class="card wide"><div class="hd"><h2>Produtividade por colaborador${infoIco("Cada célula é a quantidade de atualizações que o colaborador fez naquele dia (horário de Brasília). Várias ações no MESMO parceiro num intervalo de até 10 min (ex.: mudar status + registrar contato + editar a ficha na mesma visita) contam como 1. Se voltar ao mesmo parceiro mais tarde no dia, conta de novo. O detalhe de cada ação fica na aba de atividades. A cor fica mais forte quanto maior o volume.", "Produtividade por colaborador")}</h2></div>
         <div class="bd ger-tablewrap">
           <table class="ger-table">
             <thead><tr><th>Colaborador</th>${thDias}<th class="num">Total</th></tr></thead>

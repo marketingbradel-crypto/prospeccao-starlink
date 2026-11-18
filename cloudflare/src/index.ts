@@ -258,6 +258,94 @@ async function empresaDupCnpj(db: D1Database, cnpjNorm: string, excluirId?: numb
   return row ? (row.id as number) : null;
 }
 
+// --------------------------------------------------------------------------
+// Trava anti-duplicata do import
+// --------------------------------------------------------------------------
+// O import antigo so deduplicava por CNPJ. Como as linhas do VSM entram SEM
+// CNPJ e as do formulario de credenciamento entram SEM id_vsm, nenhuma das
+// duas compartilhava chave e a mesma empresa virava duas fichas. A trava casa
+// em tres camadas, da identidade mais forte para a mais fraca:
+//   1) CNPJ (cnpj_norm) — identidade legal; difere por filial (/0001, /0002...).
+//   2) ID VSM — so o numero inicial (ignora anotacoes tipo "4561 · SO VENDAS").
+//   3) Razao social + UF + Cidade (normalizados) — SO contra fichas SEM CNPJ,
+//      para nao fundir CNPJs distintos de mesmo nome; a cidade entra no match
+//      para preservar filiais reais (ex.: DIGISAT em 5 cidades do mesmo nome).
+const estaVazio = (v: any): boolean =>
+  v === null || v === undefined || (typeof v === "string" && v.trim() === "");
+
+function normIdVsm(s: any): string {
+  const m = String(s ?? "").trim().match(/^\d+/);
+  return m ? m[0] : "";
+}
+
+function chaveNomeCidade(razao: any, uf: any, cidade: any): string {
+  const n = L.norm(String(razao ?? ""));
+  if (!n) return "";
+  return `${n}|${String(uf ?? "").trim().toUpperCase()}|${L.norm(String(cidade ?? ""))}`;
+}
+
+type IndiceDup = { cnpj: Map<string, number>; vsm: Map<string, number>; nome: Map<string, { id: number; idVsm: string }> };
+
+// Carrega UMA vez (1 query) um indice em memoria de todas as fichas existentes.
+async function carregarIndiceDup(db: D1Database): Promise<IndiceDup> {
+  const { results } = await db
+    .prepare("SELECT id, cnpj_norm, id_vsm, razao_social, uf, cidade FROM empresas")
+    .all<Row>();
+  const idx: IndiceDup = { cnpj: new Map(), vsm: new Map(), nome: new Map() };
+  for (const r of results ?? []) {
+    const id = Number(r.id);
+    const cn = soDigitos(r.cnpj_norm);
+    if (cn && !idx.cnpj.has(cn)) idx.cnpj.set(cn, id);
+    const v = normIdVsm(r.id_vsm);
+    if (v && !idx.vsm.has(v)) idx.vsm.set(v, id);
+    const k = chaveNomeCidade(r.razao_social, r.uf, r.cidade);
+    if (k && !cn && !idx.nome.has(k)) idx.nome.set(k, { id, idVsm: v });
+  }
+  return idx;
+}
+
+// ID VSM diferente => cadastros distintos (filiais/linhas), NUNCA sao duplicata:
+// so bloqueia o match por nome quando AMBOS os lados tem id_vsm e eles diferem
+// (uma ficha sem id_vsm — ex.: formulario — ainda funde na ficha VSM por nome).
+function idVsmConflita(a: any, b: any): boolean {
+  const va = normIdVsm(a), vb = normIdVsm(b);
+  return !!va && !!vb && va !== vb;
+}
+
+// Id da ficha existente que corresponde a `data`, ou null. Camadas em ordem.
+function acharDupIndice(idx: IndiceDup, data: Row): number | null {
+  const cn = soDigitos(data.cnpj);
+  if (cn && idx.cnpj.has(cn)) return idx.cnpj.get(cn)!;
+  const v = normIdVsm(data.id_vsm);
+  if (v && idx.vsm.has(v)) return idx.vsm.get(v)!;
+  const k = chaveNomeCidade(data.razao_social, data.uf, data.cidade);
+  if (k && idx.nome.has(k)) {
+    const cand = idx.nome.get(k)!;
+    if (idVsmConflita(data.id_vsm, cand.idVsm)) return null; // filiais/linhas distintas
+    return cand.id;
+  }
+  return null;
+}
+
+// Indice das fichas NOVAS ainda nao inseridas (dedup dentro do proprio arquivo).
+type PendIdx = { cnpj: Map<string, Row>; vsm: Map<string, Row>; nome: Map<string, Row> };
+function registrarPendente(p: PendIdx, e: Row): void {
+  const cn = soDigitos(e.cnpj); if (cn && !p.cnpj.has(cn)) p.cnpj.set(cn, e);
+  const v = normIdVsm(e.id_vsm); if (v && !p.vsm.has(v)) p.vsm.set(v, e);
+  const k = chaveNomeCidade(e.razao_social, e.uf, e.cidade); if (k && !cn && !p.nome.has(k)) p.nome.set(k, e);
+}
+function acharPendente(p: PendIdx, data: Row): Row | null {
+  const cn = soDigitos(data.cnpj); if (cn && p.cnpj.has(cn)) return p.cnpj.get(cn)!;
+  const v = normIdVsm(data.id_vsm); if (v && p.vsm.has(v)) return p.vsm.get(v)!;
+  const k = chaveNomeCidade(data.razao_social, data.uf, data.cidade);
+  if (k && p.nome.has(k)) {
+    const cand = p.nome.get(k)!;
+    if (idVsmConflita(data.id_vsm, cand.id_vsm)) return null; // id_vsm diferente = nao funde
+    return cand;
+  }
+  return null;
+}
+
 // Proximo numero de codigo REV: MAX(numero)+1. Usa o MAIOR numero existente
 // (nao o codigo da ultima linha por id), evitando codigos duplicados.
 async function proximoCodigoNum(db: D1Database): Promise<number> {
@@ -398,10 +486,12 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
   const busca = limpar(q.q);
   if (busca) {
     const like = `%${busca}%`;
+    // Busca de nome ignora espaços: "gtech" encontra "G TECH" e vice-versa.
+    const likeSemEspaco = `%${String(busca).replace(/\s+/g, "")}%`;
     where.push(
-      "(razao_social LIKE ? OR nome_fantasia LIKE ? OR cnpj LIKE ? OR resp_nome LIKE ? OR codigo LIKE ? OR cidade LIKE ?)"
+      "(REPLACE(razao_social,' ','') LIKE ? OR REPLACE(nome_fantasia,' ','') LIKE ? OR cnpj LIKE ? OR resp_nome LIKE ? OR codigo LIKE ? OR cidade LIKE ?)"
     );
-    params.push(like, like, like, like, like, like);
+    params.push(likeSemEspaco, likeSemEspaco, like, like, like, like);
   }
   const clause = where.length ? " WHERE " + where.join(" AND ") : "";
   return { clause, params };
@@ -440,6 +530,16 @@ type Usuario = { username: string; papel: Papel; admin: boolean; mustChange: boo
 // Autorizacao por papel (verificada SEMPRE no servidor — §2 do brief).
 function podeEscrever(u: Usuario | null | undefined): boolean { return !!u && (u.papel === "admin" || u.papel === "operador"); }
 function ehAdminPapel(u: Usuario | null | undefined): boolean { return !!u && u.papel === "admin"; }
+
+// Importacao em massa (/api/import): liberada apenas para usuarios nominais —
+// o superadmin do env (bradel) e a Jossy. Os demais nao fazem import em massa,
+// mesmo sendo admin/operador. Gate no servidor; a UI so esconde o botao.
+const IMPORT_USUARIOS = new Set(["jossy"]);
+function podeImportar(u: Usuario | null | undefined, env: Env): boolean {
+  if (!u) return false;
+  const nome = String(u.username || "").trim().toLowerCase();
+  return nome === creds(env).user.trim().toLowerCase() || IMPORT_USUARIOS.has(nome);
+}
 
 // ---- hashing de senha (PBKDF2-SHA256, so WebCrypto) ----
 function hexDe(buf: ArrayBuffer | Uint8Array): string {
@@ -1061,6 +1161,7 @@ app.get("/api/me", async (c) => {
     must_change: u.mustChange, responsavel, perm_gerencial,
     // Flags de capacidade p/ a UI esconder botoes (defesa secundaria; o backend decide).
     pode_escrever: podeEscrever(u), pode_excluir_empresa: ehAdminPapel(u),
+    pode_importar: podeImportar(u, c.env),
   });
 });
 
@@ -1321,6 +1422,14 @@ const ACOES_PRODUTIVIDADE = [
   "filial_nova", "filial_remove", "contato_remove", "empresa_remove",
 ];
 
+// Janela de agrupamento (segundos): varias acoes do mesmo colaborador no MESMO
+// parceiro, no mesmo dia, com intervalo <= este valor contam como UMA so
+// atualizacao na produtividade (ex.: mudar status + registrar contato + editar a
+// ficha do mesmo lojista numa unica visita = 1 ponto, nao 3). Se ele voltar ao
+// mesmo parceiro mais tarde no dia (gap maior), ai sim conta uma nova atualizacao.
+// O detalhamento de CADA acao continua visivel na aba de atividades.
+const JANELA_AGRUP_SEG = 10 * 60;
+
 // Normaliza intervalo de datas (YYYY-MM-DD). Default: ultimos 30 dias.
 function intervaloDatas(c: any): { inicio: string; fim: string } {
   const re = /^\d{4}-\d{2}-\d{2}$/;
@@ -1360,9 +1469,26 @@ app.get("/api/gerencial/produtividade", async (c) => {
     filtroUser = ` AND usuario IN (${usersSel.map(() => "?").join(",")})`;
     params.push(...usersSel);
   }
+  // Sessionizacao: cada acao vira "inicio de sessao" (=1) quando NAO ha outra acao
+  // do mesmo colaborador, no mesmo parceiro e dia, nos ultimos JANELA_AGRUP_SEG
+  // segundos. Acoes dentro da janela contam como 0 (fazem parte da mesma "visita").
+  // O total do dia = soma dos inicios de sessao. LAG retorna NULL na 1a acao de
+  // cada particao (parceiro), e NULL <= janela e' falso -> conta como novo inicio.
   const { results } = await c.env.DB.prepare(
-    `SELECT usuario, dia, COUNT(*) AS n FROM auditoria
-      WHERE origem='humano' AND dia BETWEEN ? AND ? AND acao IN (${placeholders})${filtroUser}
+    `WITH base AS (
+       SELECT usuario, dia, empresa_id, CAST(strftime('%s', ts) AS INTEGER) AS epoch
+         FROM auditoria
+        WHERE origem='humano' AND dia BETWEEN ? AND ? AND acao IN (${placeholders})${filtroUser}
+     ),
+     marcada AS (
+       SELECT usuario, dia,
+              CASE WHEN epoch - LAG(epoch) OVER (
+                     PARTITION BY usuario, dia, empresa_id ORDER BY epoch
+                   ) <= ${JANELA_AGRUP_SEG} THEN 0 ELSE 1 END AS inicio
+         FROM base
+     )
+     SELECT usuario, dia, SUM(inicio) AS n
+       FROM marcada
       GROUP BY usuario, dia`
   ).bind(...params).all<Row>();
 
@@ -2286,11 +2412,20 @@ async function metaSet(db: D1Database, chave: string, valor: string): Promise<vo
     .bind(chave, valor).run();
 }
 
-// Lista ordenada e estavel de cidades-alvo (todas as cidades das UFs de atuacao).
+// Lista estavel de cidades-alvo (todas as cidades das UFs de atuacao),
+// INTERCALADA por estado (round-robin: 1 cidade de cada UF por vez). Assim
+// cada lote diario do cron toca os 4 estados juntos, em vez de esgotar o PA
+// inteiro antes de comecar o TO (o que concentrava os prospects no PA).
 function alvosCron(): { municipio: string; uf: string }[] {
+  const porUf = L.UFS.map((uf) =>
+    geo.listaMunicipios(uf).map((m) => ({ municipio: m.municipio, uf: m.uf }))
+  );
+  const maxLen = Math.max(0, ...porUf.map((l) => l.length));
   const out: { municipio: string; uf: string }[] = [];
-  for (const uf of L.UFS) {
-    for (const m of geo.listaMunicipios(uf)) out.push({ municipio: m.municipio, uf: m.uf });
+  for (let i = 0; i < maxLen; i++) {
+    for (const lista of porUf) {
+      if (i < lista.length) out.push(lista[i]);
+    }
   }
   return out;
 }
@@ -2629,6 +2764,11 @@ function linhaParaEmpresa(d: Row): Row {
 }
 
 app.post("/api/import", async (c) => {
+  // Import em massa e restrito a usuarios nominais (bradel/jossy). Qualquer outro
+  // recebe 403 mesmo que a UI tivesse mostrado o botao.
+  if (!podeImportar(c.get("usuario"), c.env)) {
+    return c.json({ erro: "Import em massa nao disponivel para este usuario." }, 403);
+  }
   // Leitura/parse do arquivo isolada: multipart torto ou arquivo invalido
   // retorna erro claro em JSON em vez de um 500 cru (o parser de FormData do
   // Worker estoura em partes sem `name`).
@@ -2657,12 +2797,17 @@ app.post("/api/import", async (c) => {
     );
   }
 
-  let atualizados = 0, ignorados = 0;
+  let atualizados = 0, ignorados = 0, mesclados = 0;
   const erros: string[] = [];
   const novos: Row[] = [];
   // Numero inicial do codigo calculado UMA vez; incrementa em memoria (evita
   // 1 SELECT por linha e o antigo bug de gerar codigos repetidos).
   let proxNum = await proximoCodigoNum(c.env.DB);
+
+  // Trava anti-duplicata: indice das fichas existentes (1 query) + indice das
+  // fichas novas deste arquivo (dedup dentro do proprio lote).
+  const idx = await carregarIndiceDup(c.env.DB);
+  const pend: PendIdx = { cnpj: new Map(), vsm: new Map(), nome: new Map() };
 
   let i = 1;
   for (const bruto of registros) {
@@ -2671,22 +2816,49 @@ app.post("/api/import", async (c) => {
       const data = linhaParaEmpresa(bruto);
       const nomeEmp = limpar(data.razao_social) || limpar(data.nome_fantasia);
       if (!nomeEmp) { ignorados += 1; continue; }
-      const dup = await empresaDupCnpj(c.env.DB, soDigitos(data.cnpj));
+
+      // 1) Ja existe no banco (CNPJ / ID VSM / nome+UF+cidade)? Preenche lacunas.
+      const dup = acharDupIndice(idx, data);
       if (dup) {
+        const atual = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(dup).first<Row>();
         const e = montarEmpresa(data, false);
-        // ID VSM e imutavel: nunca sobrescreve um ja definido, nem apaga com vazio.
-        if ("id_vsm" in e) {
-          const cur = await c.env.DB.prepare("SELECT id_vsm FROM empresas WHERE id=?").bind(dup).first<Row>();
-          if (String(cur?.id_vsm ?? "").trim() !== "") e.id_vsm = cur!.id_vsm;
-          else if (String(e.id_vsm ?? "").trim() === "") delete e.id_vsm;
+        // ID VSM e imutavel depois de definido.
+        if (atual && String(atual.id_vsm ?? "").trim() !== "") e.id_vsm = atual.id_vsm;
+        // Merge nao-destrutivo: so preenche campo que a ficha NAO tem; celula
+        // vazia do arquivo nunca apaga dado existente.
+        for (const k of Object.keys(e)) {
+          if (k === "atualizado_em") continue;
+          if (estaVazio(e[k]) || (atual && !estaVazio(atual[k]))) delete e[k];
         }
-        await atualizarEmpresa(c.env.DB, dup, e);
-        atualizados += 1;
-      } else {
-        const e = montarEmpresa(data, true);
-        if (!e.codigo) e.codigo = `REV-${String(proxNum++).padStart(3, "0")}`;
-        novos.push(e);
+        if (Object.keys(e).some((k) => k !== "atualizado_em")) {
+          e.atualizado_em = agora();
+          await atualizarEmpresa(c.env.DB, dup, e);
+          const cn = soDigitos(e.cnpj); if (cn) idx.cnpj.set(cn, dup); // ficha pode ter ganho CNPJ
+          atualizados += 1;
+        } else {
+          ignorados += 1; // ja completa, nada a preencher
+        }
+        continue;
       }
+
+      // 2) Linha repetida DENTRO do mesmo arquivo? Mescla na que ja vai ser criada.
+      const p = acharPendente(pend, data);
+      if (p) {
+        const e = montarEmpresa(data, true);
+        for (const k of Object.keys(e)) {
+          if (k === "codigo" || k === "criado_em") continue;
+          if (!estaVazio(e[k]) && estaVazio(p[k])) p[k] = e[k];
+        }
+        registrarPendente(pend, p); // re-registra: pode ter ganho CNPJ/ID VSM
+        mesclados += 1;
+        continue;
+      }
+
+      // 3) Empresa nova de fato.
+      const e = montarEmpresa(data, true);
+      if (!e.codigo) e.codigo = `REV-${String(proxNum++).padStart(3, "0")}`;
+      novos.push(e);
+      registrarPendente(pend, e);
     } catch (ex: any) {
       erros.push(`Linha ${i}: ${ex?.message ?? ex}`);
     }
@@ -2697,9 +2869,9 @@ app.post("/api/import", async (c) => {
   // produtividade humana no painel Gerencial), apenas para rastreabilidade.
   await registrarAuditoria(c, {
     acao: "import", origem: "sistema",
-    depois: `criados=${criados}, atualizados=${atualizados}, ignorados=${ignorados}`,
+    depois: `criados=${criados}, atualizados=${atualizados}, mesclados=${mesclados}, ignorados=${ignorados}`,
   });
-  return c.json({ criados, atualizados, ignorados, erros });
+  return c.json({ criados, atualizados, mesclados, ignorados, erros });
 });
 
 // Fallback: tudo que nao e /api/* vai para os assets estaticos (SPA), ja autenticado.
