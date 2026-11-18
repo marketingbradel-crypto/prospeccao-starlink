@@ -1,0 +1,4 @@
+-- STARNET: consolida 340 e 15 na 578; move contato WhatsApp (15->578); apaga copias
+UPDATE contatos SET empresa_id=578 WHERE empresa_id IN (340,15);
+UPDATE empresas SET "cnpj"='33.706.805/0001-04', "whatsapp"='93-99137-1512', "email_comercial"='STARNETXINGU@GMAIL.COM', "endereco"='RUA ACESSO 2, BAIRRO: SUDALM 1, 1212.0', "cep"='68371360', "latitude"=-3.2063046, "longitude"=-52.220043, "observacoes"='Proprietário: PATRICIA DOS SANTOS · Contato: PROPRIETÁRIA · Interesse (form): Muito alto · Prazo p/ iniciar: Imediato', "data_ultimo_contato"='2026-11-17', "proxima_acao"='NA PROXIMA LIGAÇÃO CONFIRMAR SE JÁ TEM OS ACESSOS DO VIVENSIS SERVIÇOS.', "proxima_acao_data"='2026-11-23', "cnpj_norm"='33706805000104', "atualizado_em"='2026-11-18 09:21:05' WHERE id=578;
+DELETE FROM empresas WHERE id IN (340,15);

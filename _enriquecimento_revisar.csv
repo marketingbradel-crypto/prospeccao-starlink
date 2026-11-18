@@ -1,0 +1,8 @@
+﻿id,codigo,ficha_nome,ficha_cidade,ficha_uf,ficha_tel,ficha_wpp,fonte,fonte_nome,ev_tel,ev_nome,ev_nome_exato,ev_cidade,ev_cnpj_raiz,ev_sim,ambiguo,n_cands,novo_cnpj,novo_inscricao_estadual,novo_email_comercial,novo_endereco,novo_cep
+83,REV-071,HIAGO ROBERTO RODRIGUES LACERD,Barro Alto,GO,62998004071,,Formulario,SMA AGRO AMBIENTAL,True,False,False,True,False,0.5,False,1,36500138000105,200084518,smaagroambiental@gmail.com,"Rua 7, S/N - Chácara 2",76390000
+156,REV-117,G&M Conecta,São Sebastião da Boa Vista,PA,91-99303-1250,91-99303-1250,Formulario,G&M Conecta,True,True,True,True,False,1.0,True,2,,15.402.066-4,,,
+299,REV-206,ELETRONICA SLA LTDA,Pires do Rio,GO,64996556240,,Formulario,ELETRÔNICA LIDER,True,False,False,True,False,0.33,False,1,02819606000189,103102205,eletronicalider1998@hotmail.com,"RUA DAVID ABDALA RASSI, 12A - SETOR CENTRAL",75200000
+576,REV-453,RICHANDRO ANTONIO DE MELO JUNIOR 89458117291,Altamira,PA,93991848623,,Formulario,MY IMPORTS,True,False,False,True,False,0.57,False,1,44329281000104,,JUNIOR.10TUB@ICLOUD.COM,"TRAV. VITORIA, 01- JARDIM ORIENTE- ALTAMIRA, 01",68373350
+589,REV-466,DELSA VELOSO DE OLIVEIRA RODRIGUES 00006468225,Ananindeua,PA,91983087888,,Formulario,DV RODRIGUES SERVIÇOS,True,False,False,True,False,0.57,False,1,35406752000131,,TEC.DRECIO@GMAIL.COM,"ALAMEDA DA PAZ, 10- ANANINDEUA, 10",67146261
+591,REV-468,EMERSON CASTRO NASCIMENTO 71368264204,Ananindeua,PA,91981510705,,Formulario,SPEEDNET,True,False,False,True,False,0.5,False,1,46352420000138,,EMERSON.CN.ADM@GMAIL.COM,"RUA SÃO JORGE, 54- 40 HORAS- ANANINDEUA, 54",67120090
+804,REV-681,NORTEVIA TECNOLOGIA LTDA,Sao Sebastiao da Boa Vista,PA,91993031250,91-99303-1250,Formulario,HOMEVIGIL,True,True,True,True,False,1.0,True,2,,15.897.769-6,,,
