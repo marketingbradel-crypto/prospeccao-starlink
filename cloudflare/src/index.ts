@@ -108,6 +108,77 @@ function soDigitos(s: any): string {
   return String(s ?? "").replace(/\D/g, "");
 }
 
+// --------------------------------------------------------------------------
+// Telefones — padrao BR unico: armazena so digitos (10 fixo / 11 celular),
+// exibe/exporta formatado (DD) 9XXXX-XXXX ou (DD) XXXX-XXXX.
+// --------------------------------------------------------------------------
+// Campos de telefone da empresa e se exigem CELULAR (11 digitos com 9 apos o
+// DDD). WhatsApp exige celular; telefone comum aceita fixo (10) ou celular (11).
+const TEL_CAMPOS: Record<string, boolean> = {
+  telefone_comercial: false,
+  whatsapp: true,
+  resp_telefone: false,
+  resp_whatsapp: true,
+};
+const TEL_LABEL: Record<string, string> = {
+  telefone_comercial: "Telefone comercial",
+  whatsapp: "WhatsApp",
+  resp_telefone: "Telefone do responsável",
+  resp_whatsapp: "WhatsApp do responsável",
+};
+
+// Reduz um telefone a 10/11 digitos BR: tira nao-digitos e o DDI 55 (quando
+// colado com +55 / 55). Retorna "" se nao sobrar nada.
+function telDigitos(s: any): string {
+  let d = soDigitos(s);
+  if (d.length > 11 && d.startsWith("55")) d = d.slice(2);
+  return d;
+}
+
+// Valido = fixo (10 digitos) ou celular (11 com 9 apos o DDD). soCel=true aceita
+// somente celular (usado em WhatsApp).
+function telValido(d: string, soCel: boolean): boolean {
+  if (d.length === 11) return d[2] === "9";
+  if (d.length === 10) return !soCel;
+  return false;
+}
+
+// Formata para exibicao/exportacao. Numeros fora do padrao voltam como vieram
+// (preserva legado invalido sem perder informacao).
+function fmtTel(v: any): string {
+  const s = String(v ?? "").trim();
+  const d = telDigitos(s);
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return s;
+}
+
+// Normaliza para gravar: so digitos quando valido; senao preserva o original
+// (legado fica para revisao manual, sem perda).
+function telParaArmazenar(v: any, soCel: boolean): string {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  const d = telDigitos(s);
+  return telValido(d, soCel) ? d : s;
+}
+
+// Telefones que o usuario informou e estao fora do padrao (nao vazios e
+// invalidos). Em edicao, um numero legado inalterado nao bloqueia (nao trava a
+// edicao de outros campos). Retorna os rotulos para a mensagem de erro.
+function telefonesInvalidos(data: Row, atual?: Row | null): string[] {
+  const ruins: string[] = [];
+  for (const [k, soCel] of Object.entries(TEL_CAMPOS)) {
+    if (!(k in data)) continue;
+    const s = String(data[k] ?? "").trim();
+    if (!s) continue;
+    const d = telDigitos(s);
+    if (telValido(d, soCel)) continue;
+    if (atual && d === telDigitos(atual[k])) continue; // legado inalterado
+    ruins.push(TEL_LABEL[k]);
+  }
+  return ruins;
+}
+
 function toBoolInt(v: any): number {
   if (typeof v === "boolean") return v ? 1 : 0;
   if ([1, "1", "sim", "Sim", "SIM", "true", "True", true].includes(v)) return 1;
@@ -135,6 +206,8 @@ function limpar(v: any): any {
 function montarEmpresa(data: Row, novo = true): Row {
   const e: Row = {};
   for (const k of CAMPOS_TEXTO) if (k in data) e[k] = limpar(data[k]) || "";
+  // Telefones: grava so digitos (10 fixo / 11 celular); legado invalido preservado.
+  for (const [k, soCel] of Object.entries(TEL_CAMPOS)) if (k in e) e[k] = telParaArmazenar(e[k], soCel);
   for (const k of CAMPOS_BOOL) if (k in data) e[k] = toBoolInt(data[k]);
   for (const k of CAMPOS_INT) if (k in data) e[k] = toInt(data[k]);
   for (const k of CAMPOS_FLOAT) if (k in data) e[k] = toFloat(data[k]);
@@ -827,6 +900,10 @@ app.post("/api/empresas", async (c) => {
   if (!limpar(data.razao_social) && !limpar(data.nome_fantasia)) {
     return c.json({ erro: "Informe ao menos a razão social ou o nome fantasia." }, 400);
   }
+  const telRuins = telefonesInvalidos(data);
+  if (telRuins.length) {
+    return c.json({ erro: `Telefone inválido em: ${telRuins.join(", ")}. Use DDD + número (celular com 9 dígitos).` }, 400);
+  }
   const e = montarEmpresa(data, true);
   const dup = await empresaDupCnpj(c.env.DB, e.cnpj_norm);
   if (dup) return c.json({ erro: "Já existe uma empresa com este CNPJ.", id: dup }, 409);
@@ -844,6 +921,10 @@ app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
   const atual = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(eid).first<Row>();
   if (!atual) return c.notFound();
   const data = await jsonBody(c);
+  const telRuins = telefonesInvalidos(data, atual);
+  if (telRuins.length) {
+    return c.json({ erro: `Telefone inválido em: ${telRuins.join(", ")}. Use DDD + número (celular com 9 dígitos).` }, 400);
+  }
   const e = montarEmpresa(data, false);
   // ID VSM e imutavel depois de definido: se a empresa ja tem um, ignora
   // qualquer valor que venha do formulario (a UI tambem bloqueia o campo).
@@ -1371,7 +1452,7 @@ app.post("/api/empresas/:eid{[0-9]+}/filiais", async (c) => {
     .prepare("INSERT INTO filiais (empresa_id,nome,cnpj,endereco,cidade,uf,telefone,obs) VALUES (?,?,?,?,?,?,?,?)")
     .bind(eid, limpar(data.nome) ?? null, limpar(data.cnpj) ?? null, limpar(data.endereco) ?? null,
       limpar(data.cidade) ?? null, (limpar(data.uf) || "").toUpperCase(),
-      limpar(data.telefone) ?? null, limpar(data.obs) ?? null).run();
+      telParaArmazenar(data.telefone, false) || null, limpar(data.obs) ?? null).run();
   await c.env.DB
     .prepare("UPDATE empresas SET qtd_filiais=(SELECT COUNT(*) FROM filiais WHERE empresa_id=?) WHERE id=?")
     .bind(eid, eid).run();
@@ -2521,6 +2602,7 @@ app.get("/api/export.xlsx", async (c) => {
       cols.map((col) => {
         let v = col in row ? row[col] : "";
         if (CAMPOS_BOOL.has(col)) v = v ? "Sim" : "Não";
+        else if (col in TEL_CAMPOS) v = fmtTel(v);
         return v ?? "";
       })
     );

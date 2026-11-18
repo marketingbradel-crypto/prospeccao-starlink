@@ -400,6 +400,9 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .fu-toolbar{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px 16px;margin:2px 0 10px}
 .fu-filtro{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
 .fu-filtro select{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
+.fu-busca-wrap{margin-right:auto}
+.fu-busca{padding:5px 9px;min-width:200px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
+.fu-busca:focus{outline:none;border-color:var(--accent)}
 .fu-count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 7px;
   border-radius:10px;background:var(--soft);color:var(--brand);font-size:12px;font-weight:700}
 .fu-venc .fu-count{background:#fdecec;color:#cc3a26}
@@ -683,6 +686,10 @@ html,body{overflow-x:clip}
 @media(max-width:480px){
   main{padding:10px 10px 22px}
   .kpibar{padding:10px 10px 2px}
+
+  /* Follow-up: campo de busca ocupa a linha toda. */
+  .fu-busca-wrap{width:100%;margin-right:0}
+  .fu-busca{flex:1 1 auto;min-width:0}
 
   /* Toast ocupa a largura com margem. */
   .toast{left:12px;right:12px;transform:translateY(10px);text-align:center}

@@ -25,6 +25,7 @@ const App = (() => {
   let fuVendeu = "";       // filtro "fez venda": "" todos, "1" sim, "0" não
   let fuFaixa = "";        // filtro de faixa de potencial/volume ("" = todas)
   let fuPend = "";         // filtro de pendência VSM: "" todas, "treinar", "contrato", "sem"
+  let fuBusca = "";        // busca por nome da empresa no follow-up ("" = sem filtro)
   let ME = null;           // usuário logado (/api/me): { username, admin, must_change, responsavel }
   let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
   let apMetric = "empresas"; // métrica ativa no painel de indicadores ao lado do mapa
@@ -39,6 +40,23 @@ const App = (() => {
   const hexCor = (cor) => (B && B.cor_hex[cor]) || "#9aa0ac";
   const corStatus = (st) => (B && B.status_cor[st]) || "cinza";
   const norm = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+
+  // ---- Telefones (padrão BR único) — espelha a lógica do backend ----
+  // Reduz a 10/11 dígitos, tirando separadores e o DDI 55 (colagem com +55).
+  const telDigitos = (s) => { let d = String(s ?? "").replace(/\D/g, ""); if (d.length > 11 && d.startsWith("55")) d = d.slice(2); return d; };
+  // Válido = fixo (10) ou celular (11 com 9 após o DDD). soCel exige celular (WhatsApp).
+  const telValido = (d, soCel) => d.length === 11 ? d[2] === "9" : (d.length === 10 ? !soCel : false);
+  // Exibição padrão: (DD) 9XXXX-XXXX ou (DD) XXXX-XXXX. Fora do padrão volta como veio.
+  const fmtTel = (v) => { const s = String(v ?? "").trim(); const d = telDigitos(s); if (d.length === 11) return `(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`; if (d.length === 10) return `(${d.slice(0,2)}) ${d.slice(2,6)}-${d.slice(6)}`; return s; };
+  // Máscara progressiva (digitação/colagem em tempo real). Até 10 díg. usa 4+4; a partir do 11º, 5+4.
+  const mascaraTel = (v) => {
+    const d = telDigitos(v).slice(0, 11);
+    if (!d) return "";
+    const ddd = d.slice(0, 2);
+    if (d.length <= 2) return `(${d}`;
+    const r = d.slice(2), corte = d.length > 10 ? 5 : 4;
+    return r.length <= corte ? `(${ddd}) ${r}` : `(${ddd}) ${r.slice(0, corte)}-${r.slice(corte)}`;
+  };
   // Formata "2026-11-16 06:01:02" (ou ISO) para "16/11/2026 06:01". Sem hora, só a data.
   const fmtData = (s) => {
     if (!s) return "";
@@ -158,7 +176,7 @@ const App = (() => {
       { k: "razao_social", l: "Razão social", req: 1, full: 1 },
       { k: "nome_fantasia", l: "Nome fantasia", full: 1 },
       { k: "cnpj", l: "CNPJ" }, { k: "inscricao_estadual", l: "Inscrição estadual" },
-      { k: "telefone_comercial", l: "Telefone comercial" }, { k: "whatsapp", l: "WhatsApp" },
+      { k: "telefone_comercial", l: "Telefone comercial", tel: 1 }, { k: "whatsapp", l: "WhatsApp", tel: 1, cel: 1 },
       { k: "email_comercial", l: "E-mail comercial" }, { k: "site_instagram", l: "Site / Instagram" },
       { k: "endereco", l: "Endereço", full: 1 },
       { k: "cep", l: "CEP" }, { k: "cidade", l: "Cidade" },
@@ -169,8 +187,8 @@ const App = (() => {
     ]},
     { t: "Responsável na empresa", f: [
       { k: "resp_nome", l: "Nome", full: 1 },
-      { k: "resp_cargo", l: "Cargo" }, { k: "resp_telefone", l: "Telefone direto" },
-      { k: "resp_whatsapp", l: "WhatsApp" }, { k: "resp_email", l: "E-mail" },
+      { k: "resp_cargo", l: "Cargo" }, { k: "resp_telefone", l: "Telefone direto", tel: 1 },
+      { k: "resp_whatsapp", l: "WhatsApp", tel: 1, cel: 1 }, { k: "resp_email", l: "E-mail" },
     ]},
     { t: "Informações comerciais", f: [
       { k: "segmento", l: "Segmento", type: "select", opts: "segmentos", full: 1, tip: "Ramo de atividade da empresa. Ajuda a avaliar aderência à Starlink e a filtrar a base." },
@@ -214,6 +232,12 @@ const App = (() => {
     await carregarMunicipios();
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
+    // Máscara de telefone em tempo real p/ qualquer input [data-mask=tel] (ficha,
+    // filial e futuros formulários). Delegação: vale para campos criados dinamicamente.
+    document.addEventListener("input", (ev) => {
+      const el = ev.target;
+      if (el && el.dataset && el.dataset.mask === "tel") el.value = mascaraTel(el.value);
+    });
     // Fecha o menu do usuário ao clicar fora; ESC / clique no fundo fecham o modal.
     document.addEventListener("click", (ev) => {
       const um = $("usermenu"); if (um && !um.contains(ev.target)) fecharUserMenu();
@@ -942,7 +966,7 @@ const App = (() => {
         <td class="c-seg">${esc(seg)}</td>
         <td><span class="pill-faixa sm" style="--pc:${fxHex}"><span class="d" style="background:${fxHex}"></span>${esc(fxCurta)}</span></td>
         <td><span class="badge"><span class="d" style="background:${e.cor_hex}"></span>${esc(e.status || "")}</span></td>
-        <td class="c-tel">${tel ? esc(tel) : '<span class="hint">—</span>'}</td>
+        <td class="c-tel">${tel ? esc(fmtTel(tel)) : '<span class="hint">—</span>'}</td>
         <td class="c-resp">${esc(resp)}</td>
         <td class="sp"></td>
       </tr>`;
@@ -1552,6 +1576,15 @@ const App = (() => {
     renderFollowUp();
   }
 
+  // Busca por nome: re-renderiza e devolve o foco/cursor ao campo (senão
+  // o input perderia o foco a cada tecla por causa do innerHTML).
+  function fuBuscar(v) {
+    fuBusca = v || "";
+    renderFollowUp();
+    const inp = $("fu-busca");
+    if (inp) { inp.focus(); const n = inp.value.length; try { inp.setSelectionRange(n, n); } catch (e) {} }
+  }
+
   function renderFollowUp() {
     const box = $("fu-body");
     const d = FU;
@@ -1578,6 +1611,10 @@ const App = (() => {
         </label>`;
     const filtro = `
       <div class="fu-toolbar">
+        <label class="fu-filtro fu-busca-wrap">Buscar
+          <input id="fu-busca" type="search" class="fu-busca" placeholder="Nome da empresa…"
+                 value="${esc(fuBusca)}" oninput="App.fuBuscar(this.value)" autocomplete="off">
+        </label>
         ${sel("fu-resp", "Responsável", fuResp || "", resps)}
         ${sel("fu-uf", "Estado", fuUF, ufs)}
         ${sel("fu-status", "Status", fuStatus, statuses)}
@@ -1586,7 +1623,9 @@ const App = (() => {
         ${sel("fu-pend", "Pendência VSM", fuPend, [{ v: "treinar", t: "Falta treinar" }, { v: "contrato", t: "Falta assinar contrato" }, { v: "sem", t: "Sem pendência" }])}
         ${sel("fu-faixa", "Potencial", fuFaixa, faixas)}
       </div>`;
+    const buscaN = norm(fuBusca);
     const passa = (x) => {
+      if (buscaN && !norm(x.nome).includes(buscaN)) return false;
       if (fuResp && (x.responsavel || "") !== fuResp) return false;
       if (fuUF && (x.uf || "") !== fuUF) return false;
       if (fuStatus && (x.status || "") !== fuStatus) return false;
@@ -1699,7 +1738,7 @@ const App = (() => {
         </div>
         <div class="fu-side">
           ${bits.join("")}
-          ${tel ? `<span class="fu-tel">${esc(tel)}</span>` : ""}
+          ${tel ? `<span class="fu-tel">${esc(fmtTel(tel))}</span>` : ""}
         </div>
       </div>`;
   }
@@ -1831,7 +1870,7 @@ const App = (() => {
     const tel = x.telefone || "";
     const rede = x.rede || "";
     const linhas = [];
-    if (tel) linhas.push(`<div class="pl"><span>${x.whatsapp ? "WhatsApp" : "Telefone"}</span><b>${esc(tel)}</b></div>`);
+    if (tel) linhas.push(`<div class="pl"><span>${x.whatsapp ? "WhatsApp" : "Telefone"}</span><b>${esc(fmtTel(tel))}</b></div>`);
     if (rede && x.handle) linhas.push(`<div class="pl"><span>Perfil</span><b>${esc(x.handle)}</b></div>`);
     linhas.push(`<div class="pl"><span>CNPJ</span><b class="hint">a completar</b></div>`);
     if (x.endereco) linhas.push(`<div class="pl"><span>Endereço</span><b>${esc(x.endereco)}</b></div>`);
@@ -1936,7 +1975,7 @@ const App = (() => {
       <tr>
         <td class="c-nome">${esc(p.nome)}${p.tipo ? `<br><span class="hint">${esc(p.tipo)}</span>` : ""}</td>
         <td class="c-loc" title="${esc(p.cidade || "")}">${esc(local)}</td>
-        <td class="c-tel">${tel ? esc(tel) : '<span class="hint">—</span>'}</td>
+        <td class="c-tel">${tel ? esc(fmtTel(tel)) : '<span class="hint">—</span>'}</td>
         <td>${links.length ? links.join(" · ") : '<span class="hint">—</span>'}</td>
         <td class="c-resp">${esc(formatarData(p.encontrado_em))}</td>
         <td class="sp"></td>
@@ -2158,6 +2197,12 @@ const App = (() => {
         ? `<div class="${cls}"><label>${f.l}${ico}</label><input type="text" id="${id}" value="${esc(val)}" readonly disabled title="Definido no credenciamento — não editável." style="background:var(--soft);color:var(--muted);cursor:not-allowed"></div>`
         : `<div class="${cls}"><label>${f.l}${ico}</label><input type="text" id="${id}" value="" placeholder="Em branco até o credenciamento"></div>`;
     }
+    if (f.tel) {
+      // Telefone: valor inicial já formatado, máscara em tempo real (data-mask) e
+      // placeholder guiando o padrão BR. data-cel marca campos que exigem celular.
+      const ph = f.cel ? "(62) 99999-9999" : "(62) 99999-9999 ou (62) 3333-4444";
+      return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}</label><input type="text" id="${id}" inputmode="tel" data-mask="tel"${f.cel ? ' data-cel="1"' : ""} placeholder="${ph}" value="${esc(fmtTel(val))}"></div>`;
+    }
     const t = f.type === "num" ? "number" : f.type === "date" ? "date" : "text";
     return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}</label><input type="${t}" id="${id}" value="${esc(val ?? "")}"></div>`;
   }
@@ -2284,13 +2329,13 @@ const App = (() => {
 
       <div class="sec" style="margin-top:16px"><h4>Contato</h4>
         <dl class="kv">
-          ${kv("CNPJ", e.cnpj)}${kv("Telefone", e.telefone_comercial)}${kv("WhatsApp", e.whatsapp)}
+          ${kv("CNPJ", e.cnpj)}${kv("Telefone", fmtTel(e.telefone_comercial))}${kv("WhatsApp", fmtTel(e.whatsapp))}
           ${kv("E-mail", e.email_comercial)}${kv("Site/Insta", e.site_instagram)}
           ${kv("Endereço", e.endereco)}${kv("Cidade", (e.cidade || "") + (e.uf ? " · " + e.uf : ""))}${kv("Microrregião", e.microrregiao)}
         </dl></div>
 
       <div class="sec"><h4>Responsável</h4><dl class="kv">
-        ${kv("Nome", e.resp_nome)}${kv("Cargo", e.resp_cargo)}${kv("Telefone", e.resp_telefone)}${kv("E-mail", e.resp_email)}
+        ${kv("Nome", e.resp_nome)}${kv("Cargo", e.resp_cargo)}${kv("Telefone", fmtTel(e.resp_telefone))}${kv("E-mail", e.resp_email)}
       </dl></div>
 
       <div class="sec"><h4>Perfil comercial</h4>
@@ -2313,7 +2358,7 @@ const App = (() => {
           <div class="fld"><input id="fil-nome" placeholder="Nome/identificação"></div>
           <div class="fld"><input id="fil-cidade" placeholder="Cidade"></div>
           <div class="fld"><input id="fil-uf" placeholder="UF" maxlength="2"></div>
-          <div class="fld"><input id="fil-tel" placeholder="Telefone"></div>
+          <div class="fld"><input id="fil-tel" inputmode="tel" data-mask="tel" placeholder="(62) 99999-9999"></div>
         </div>
         <button class="btn" style="margin-top:8px;background:var(--soft);color:var(--brand)" onclick="App.addFilial()">+ Adicionar filial</button>
       </div>
@@ -2369,6 +2414,39 @@ const App = (() => {
       <div class="df">${footer}</div>`;
     $("overlay").classList.add("on");
     $("drawer").classList.add("on");
+    // Só há campos editáveis quando a ficha está em modo de edição/cadastro.
+    if (!consulta && (editMode || nova)) wireSegmentoAuto();
+  }
+
+  // Auto-atribuição do varejo (Sunamita): todo lojista de "Móveis e eletro" é,
+  // por definição, do canal Varejo (mercantil) e da carteira da Sunamita. Ao
+  // escolher esse segmento na ficha, preenchemos canal + responsável sozinhos —
+  // elimina o esquecimento de marcar o canal (hoje manual). Não é destrutivo:
+  // o responsável só é preenchido se estiver vazio, e os selects seguem editáveis.
+  const SEG_VAREJO = "Móveis e eletro";
+  const CANAL_VAREJO = "Varejo (mercantil)";
+  const RESP_VAREJO = "Sunamita";
+  function temOpcao(sel, val) {
+    return !!sel && Array.from(sel.options).some(o => o.value === val);
+  }
+  function wireSegmentoAuto() {
+    const seg = $("fld-segmento");
+    if (!seg) return;
+    seg.addEventListener("change", () => {
+      if (seg.value !== SEG_VAREJO) return;
+      const canal = $("fld-canal"), resp = $("fld-responsavel");
+      const mudou = [];
+      // Canal é definicional do segmento → sempre alinha para Varejo.
+      if (temOpcao(canal, CANAL_VAREJO) && canal.value !== CANAL_VAREJO) {
+        canal.value = CANAL_VAREJO; mudou.push("canal Varejo (mercantil)");
+      }
+      // Responsável: só preenche se estiver vazio, para não tomar de alguém
+      // que já esteja nomeado como responsável nesta ficha.
+      if (temOpcao(resp, RESP_VAREJO) && !resp.value) {
+        resp.value = RESP_VAREJO; mudou.push("responsável Sunamita");
+      }
+      if (mudou.length) toast("Móveis e eletro → " + mudou.join(" e ") + " (automático).");
+    });
   }
 
   async function abrirFicha(id) {
@@ -2393,6 +2471,18 @@ const App = (() => {
   async function salvar() {
     const dados = coletar();
     if (!dados.razao_social && !dados.nome_fantasia) { toast("Informe a razão social ou o nome fantasia."); return; }
+    // Telefones: bloqueia incompletos/inválidos. Legado inalterado (mesmo número já
+    // gravado) não trava a edição de outros campos.
+    const telErros = [];
+    FORM.forEach(sec => sec.f.forEach(f => {
+      if (!f.tel) return;
+      const d = telDigitos(dados[f.k] || "");
+      if (!d) return;
+      if (telValido(d, !!f.cel)) return;
+      if (cur && d === telDigitos(cur[f.k])) return; // legado inalterado
+      telErros.push(f.l);
+    }));
+    if (telErros.length) { toast("Telefone inválido: " + telErros.join(", ") + ". Use DDD + número (celular com 9 dígitos)."); return; }
     const nova = !cur || !cur.id;
     const url = nova ? "/api/empresas" : "/api/empresas/" + cur.id;
     const r = await fetch(url, { method: nova ? "POST" : "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(dados) });
@@ -2530,7 +2620,7 @@ const App = (() => {
     apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
-    varreduraAgora, fuFiltrar,
+    varreduraAgora, fuFiltrar, fuBuscar,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     navToggle,
