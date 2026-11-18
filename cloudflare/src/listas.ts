@@ -41,11 +41,57 @@ export const PENDENCIAS_VSM = [
   "Falta treinar e assinar contrato",
 ];
 
+// --------------------------------------------------------------------------
+// Pendencia CADASTRAL — situacao atual do parceiro no cadastro Vivensis, lida da
+// coluna BC ("Situacao do cadastro (auto)") do arquivo-mestre do FORMULARIO.
+// NAO confundir com a ORIGEM do contato (de onde o parceiro veio) nem com
+// PENDENCIAS_VSM (treino/contrato). Somente leitura; atualizada a cada sync.
+// --------------------------------------------------------------------------
+export const PENDENCIAS_CADASTRO = [
+  "Chave PIX",
+  "Inapto CNAE",
+  "Cadastro VSM",
+  "Pronto",
+  "Não cadastrado ainda",
+  "Outro",
+];
+
+// Cor por flag (fundo solido + texto branco nas badges da ficha; tom suave nas
+// tags do Follow-up). Cores distintas para leitura rapida da situacao.
+export const PENDENCIA_CADASTRO_HEX: Record<string, string> = {
+  "Chave PIX": "#2f6fd0",            // azul
+  "Inapto CNAE": "#cc3a26",          // vermelho
+  "Cadastro VSM": "#e8b800",         // amarelo (pendencia de cadastro no VSM)
+  "Pronto": "#2e9e5b",               // verde (regularizado)
+  "Não cadastrado ainda": "#9a948a", // cinza
+  "Outro": "#7b3fc4",                // roxo (nao previsto — conferir texto original)
+};
+
+// Classifica o texto bruto da coluna BC numa das flags previstas, SEM nunca
+// inferir pela origem do contato. Regras (brief):
+//  - vazio / nao identificado -> "" (sem flag; NUNCA vira "Pronto").
+//  - "Chave pix" -> Chave PIX; "Inapto CNAE" -> Inapto CNAE; "Pronto" -> Pronto.
+//  - "Cadastrado no VSM" (qualquer texto com cadastr + vsm) -> Cadastro VSM.
+//  - texto que diga explicitamente "nao cadastrado" -> Nao cadastrado ainda.
+//  - qualquer outro texto nao previsto (ex.: "credenciamento de SC") -> Outro,
+//    preservando o original em `obs` para conferencia.
+export function classificarPendenciaCadastro(raw: any): { flag: string; obs: string } {
+  const orig = String(raw ?? "").trim();
+  if (!orig) return { flag: "", obs: "" };
+  const n = norm(orig).replace(/\s+/g, " ");
+  if (n.includes("chave") && n.includes("pix")) return { flag: "Chave PIX", obs: "" };
+  if (n.includes("inapto")) return { flag: "Inapto CNAE", obs: "" };
+  if (n.includes("cadastr") && n.includes("vsm")) return { flag: "Cadastro VSM", obs: "" };
+  if (n === "pronto") return { flag: "Pronto", obs: "" };
+  if (n.includes("nao cadastr")) return { flag: "Não cadastrado ainda", obs: "" };
+  return { flag: "Outro", obs: orig };
+}
+
 // Canal comercial
 export const CANAIS = ["Telecom", "Varejo (mercantil)"];
 
 // Responsaveis (equipe de prospeccao)
-export const RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita"];
+export const RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita", "Elionay", "Alessandra"];
 
 // Mapa login (username) -> responsavel (carteira). Define quem, ao entrar, ja abre
 // o Follow-up filtrado pela propria carteira. Quem NAO esta aqui ve tudo (geral):

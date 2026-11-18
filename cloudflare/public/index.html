@@ -50,6 +50,7 @@
         <button onclick="App.abrirMinhasSessoes()">Meus dispositivos / sessões</button>
         <button id="menu-usuarios" onclick="App.abrirUsuarios()" hidden>Gerenciar usuários</button>
         <button id="menu-seguranca" onclick="App.abrirSeguranca()" hidden>Segurança e auditoria</button>
+        <button id="menu-backup" onclick="App.abrirBackup()" hidden>Backup dos dados</button>
         <a href="/logout">Sair</a>
       </div>
     </div>
@@ -74,6 +75,7 @@
           <label class="fld"><span>Status comercial <span class="info" tabindex="0" role="button" aria-label="Ajuda: Status comercial" data-tip="Etapa da empresa no funil: de aguardando contato e em atendimento até pronto para venda, ou perdido/sem retorno."></span></span><select id="f-status"></select></label>
           <label class="fld"><span>Potencial (vendas/mês) <span class="info" tabindex="0" role="button" aria-label="Ajuda: Potencial de vendas por mês" data-tip="Faixa de quantas antenas a revenda vende por mês (10+, 20+, 30+…). Use para priorizar quem tem maior potencial."></span></span><select id="f-faixa"></select></label>
           <label class="fld"><span>Pendência (VSM) <span class="info" tabindex="0" role="button" aria-label="Ajuda: Pendência de treino/contrato" data-tip="Situação do parceiro no VSM (planilha Vivensis): se falta assinar contrato, falta treinar, ambos, ou está sem pendência."></span></span><select id="f-pend"></select></label>
+          <label class="fld"><span>Situação do cadastro <span class="info" tabindex="0" role="button" aria-label="Ajuda: Situação do cadastro" data-tip="Flag de pendência cadastral lida da planilha (coluna BC): Chave PIX, Inapto CNAE, Cadastro VSM, Pronto, Não cadastrado ainda ou Outro. É independente da origem do contato."></span></span><select id="f-pendcad"></select></label>
           <label class="fld"><span>Já fez venda? <span class="info" tabindex="0" role="button" aria-label="Ajuda: Já fez venda" data-tip="Mostra só quem já vendeu ao menos uma antena, ou só quem ainda não vendeu."></span></span>
             <select id="f-vendeu"><option value="">Todos</option><option value="sim">Sim — já vendeu</option><option value="nao">Não — ainda não</option></select>
           </label>

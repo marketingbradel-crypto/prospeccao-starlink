@@ -27,3 +27,6 @@ node_modules/
 /_*.json
 /_*.sql
 cloudflare/_dumperr.txt
+
+# Agente de sincronizacao: config local com o token - NUNCA versionar
+agente-sync/config.local.json

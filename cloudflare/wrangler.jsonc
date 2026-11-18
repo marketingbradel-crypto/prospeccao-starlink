@@ -8,9 +8,11 @@
   "observability": {
     "enabled": true
   },
-  // Varredura automatica diaria da prospeccao (09:00 UTC = 06:00 BRT).
+  // Gatilhos agendados (America/Sao_Paulo = UTC-3 fixo desde 2019):
+  //  - "0 3 * * *"  -> 00:00 BRT: BACKUP COMPLETO diario e autonomo (runBackup).
+  //  - "0 9 * * *"  -> 06:00 BRT: varredura rotativa da prospeccao (runCron).
   "triggers": {
-    "crons": ["0 9 * * *"]
+    "crons": ["0 3 * * *", "0 9 * * *"]
   },
   "assets": {
     "directory": "./public",

@@ -281,6 +281,15 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .fld label.req::after{content:" *";color:var(--vermelho)}
 .fld input,.fld select,.fld textarea{padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--soft);width:100%}
 .fld textarea{resize:vertical;min-height:62px}
+/* Campos protegidos (CNPJ / Razão social): cadeado + ação de desbloqueio */
+.lockrow{display:flex;align-items:center;gap:8px}
+.lockrow input[data-lock]{background:var(--line);color:var(--muted);cursor:not-allowed}
+.lock-ico{font-size:12px;opacity:.85}
+.lock-open{font-size:11px;color:var(--accent);font-weight:700}
+.lock-btn{flex:0 0 auto;border:1px solid var(--accent);background:var(--accent-weak);color:var(--accent);
+  border-radius:7px;padding:6px 10px;font-size:11.5px;font-weight:700;white-space:nowrap;cursor:pointer}
+.lock-btn:hover{filter:brightness(.97)}
+.lock-note{flex:0 0 auto;font-size:11px;color:var(--muted);white-space:nowrap}
 .chk{display:flex;align-items:center;gap:8px;height:34px}
 .chk input{width:17px;height:17px;accent-color:var(--accent)}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px}
@@ -724,3 +733,21 @@ html,body{overflow-x:clip}
   .brand .logo{width:34px;height:34px;font-size:16px}
   .viewtabs button{padding:11px 12px}
 }
+
+/* --- Card de sincronização da pasta de rede (aba Gerencial) --- */
+.sync-card .sync-linha{display:flex;gap:28px;flex-wrap:wrap;margin-bottom:10px}
+.sync-card .sync-lbl{font-size:11px;color:var(--cinza);text-transform:uppercase;letter-spacing:.04em}
+.sync-card .sync-val{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;margin-top:2px}
+.sync-badge{display:inline-block;font-size:11px;font-weight:700;border-radius:20px;padding:2px 9px}
+.sync-badge.sync-ok{color:var(--verde);background:rgba(46,158,91,.14);border:1px solid rgba(46,158,91,.4)}
+.sync-badge.sync-neutro{color:var(--cinza);background:rgba(154,160,172,.14);border:1px solid rgba(154,160,172,.4)}
+.sync-badge.sync-falha{color:var(--vermelho);background:rgba(204,58,38,.12);border:1px solid rgba(204,58,38,.4)}
+.sync-nums{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;color:#444;margin:6px 0}
+.sync-nums .sync-imp{color:var(--azul);font-weight:600}
+.sync-msg{font-size:12.5px;color:#555;margin-top:4px}
+.sync-alerta{font-size:12.5px;color:var(--vermelho);background:rgba(204,58,38,.08);border:1px solid rgba(204,58,38,.3);border-radius:8px;padding:7px 10px;margin-bottom:10px}
+.sync-hist{margin-top:10px}
+.sync-hist summary{cursor:pointer;font-size:12.5px;color:var(--azul);font-weight:600}
+.sync-htab{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px}
+.sync-htab th,.sync-htab td{text-align:left;padding:4px 8px;border-bottom:1px solid rgba(0,0,0,.07);vertical-align:top}
+.sync-htab th{color:var(--cinza);font-weight:600;text-transform:uppercase;font-size:10.5px;letter-spacing:.03em}

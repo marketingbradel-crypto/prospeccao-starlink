@@ -10,6 +10,7 @@ const App = (() => {
   let EMPRESAS = [];       // lista atual filtrada
   let cur = null;          // empresa aberta no drawer
   let editMode = false;
+  let camposLiberados = new Set(); // campos protegidos (CNPJ/Razão social) desbloqueados nesta sessão do drawer
   let sel = null;          // "UF|microrregiao" selecionada no mapa
   let buscaTimer = null;
   let PROSPEC = [];        // resultados atuais da busca de prospecção (Google Places)
@@ -34,6 +35,8 @@ const App = (() => {
   let gerFim = "";
   let gerUsers = [];         // colaboradores selecionados ([] = todos)
   let gerColabs = [];        // colaboradores disponíveis (/api/gerencial/colaboradores)
+  let gerSync = null;        // status da sincronização da pasta de rede (/api/sync/status)
+  let gerSyncRuns = [];      // histórico de execuções da sincronização (/api/sync/runs)
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -173,9 +176,9 @@ const App = (() => {
   // -------- formulário de empresa (geração automática) --------
   const FORM = [
     { t: "Dados da empresa", f: [
-      { k: "razao_social", l: "Razão social", req: 1, full: 1 },
+      { k: "razao_social", l: "Razão social", req: 1, full: 1, lock: 1, tip: "Identidade cadastral do parceiro. Depois de preenchida e salva, fica protegida contra alteração acidental; só um administrador pode desbloquear para corrigir." },
       { k: "nome_fantasia", l: "Nome fantasia", full: 1 },
-      { k: "cnpj", l: "CNPJ" }, { k: "inscricao_estadual", l: "Inscrição estadual" },
+      { k: "cnpj", l: "CNPJ", lock: 1, tip: "Identidade legal do parceiro. Depois de preenchido e salvo, fica protegido contra alteração acidental; só um administrador pode desbloquear para corrigir." }, { k: "inscricao_estadual", l: "Inscrição estadual" },
       { k: "telefone_comercial", l: "Telefone comercial", tel: 1 }, { k: "whatsapp", l: "WhatsApp", tel: 1, cel: 1 },
       { k: "email_comercial", l: "E-mail comercial" }, { k: "site_instagram", l: "Site / Instagram" },
       { k: "endereco", l: "Endereço", full: 1 },
@@ -262,6 +265,7 @@ const App = (() => {
     $("uava").textContent = (nome[0] || "?");
     $("menu-usuarios").hidden = !ME.admin;
     if ($("menu-seguranca")) $("menu-seguranca").hidden = !ME.admin;
+    if ($("menu-backup")) $("menu-backup").hidden = !ME.admin;
     // Gating por papel (RBAC): perfil Consulta não vê botões de escrita (o backend
     // bloqueia de qualquer forma — isto é só UX). Exportar/Modelo continuam (leitura).
     const consulta = ME.papel === "consulta";
@@ -510,7 +514,7 @@ const App = (() => {
         <td>${esc((a.ts || "").slice(0, 19))}</td>
         <td>${esc(a.usuario || "—")}</td>
         <td>${esc(a.acao_label || a.acao)}</td>
-        <td>${esc([a.campo, a.valor_depois].filter(Boolean).join(" → "))}</td>
+        <td>${esc(a.valor_antes ? (a.valor_antes + " → " + (a.valor_depois || "")) : [a.campo, a.valor_depois].filter(Boolean).join(" → "))}</td>
         <td>${esc(a.ip || "")}</td>
       </tr>`).join("");
     $("seg-body").innerHTML = `<div class="seg-tablewrap"><table class="seg-table">
@@ -530,6 +534,90 @@ const App = (() => {
       <div class="seg-tablewrap"><table class="seg-table">
       <thead><tr><th>Usuário</th><th>IP</th><th>Falhas</th><th>Situação</th></tr></thead>
       <tbody>${linhas || '<tr><td colspan="4">Nenhuma tentativa recente.</td></tr>'}</tbody></table></div>`;
+  }
+
+  // ---- painel admin de backup ----
+  function fmtBytes(b) {
+    b = Number(b || 0);
+    if (!b) return "—";
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+    return Math.max(1, Math.round(b / 1024)) + " KB";
+  }
+  async function abrirBackup() {
+    fecharUserMenu();
+    abrirModal("Backup dos dados", `<div class="modal-note">Carregando…</div>`);
+    await renderBackup();
+  }
+  async function renderBackup() {
+    let st = {};
+    try { st = await (await fetch("/api/backup/status")).json(); } catch (e) {}
+    const ultimo = st.stats && st.stats.ok
+      ? `${esc(st.ultima || "")} · ${st.stats.linhas} linhas / ${st.stats.tabelas} tabelas`
+      : (st.stats && st.stats.erro ? `⚠ falhou: ${esc(st.stats.erro)}` : "ainda não executado");
+    $("modal-b").innerHTML = `
+      <div class="modal-note">Backup completo <b>automático todos os dias à meia-noite</b> (horário de Brasília), sem precisar de ninguém conectado. Guardado ${esc(st.destino || "no próprio banco")}; mantém ${st.retencao_dias || 90} dias. <b>Baixe</b> um backup para guardar uma cópia fora do sistema.</div>
+      <div class="seg-kpis">
+        <div class="seg-kpi"><b>${st.total ?? "–"}</b><span>backups guardados</span></div>
+        <div class="seg-kpi"><b>${fmtBytes(st.bytes_total)}</b><span>espaço usado</span></div>
+        <div class="seg-kpi" style="flex:2"><b style="font-size:13px;line-height:1.3">${ultimo}</b><span>último backup</span></div>
+      </div>
+      <div style="margin:12px 0"><button class="btn primary" onclick="App.backupAgora(this)">Fazer backup agora</button></div>
+      <div id="bk-body"><div class="modal-note">Carregando…</div></div>`;
+    await renderBackupLista();
+  }
+  async function renderBackupLista() {
+    let lista = [];
+    try { lista = await (await fetch("/api/backup/list")).json(); } catch (e) {}
+    const linhas = (lista || []).map(b => {
+      const origem = b.origem === "auto" ? "automático"
+        : (b.origem === "manual" ? "manual"
+        : (b.origem === "pre-restauracao" ? "pré-restauração" : esc(b.origem)));
+      const conteudo = b.status === "ok"
+        ? `${b.linhas} linhas / ${b.tabelas} tab.`
+        : `⚠ ${esc(b.erro || "erro")}`;
+      const acoes = b.status === "ok"
+        ? `<a class="lnk" href="/api/backup/download/${b.id}">baixar</a>
+           <button class="lnk" onclick="App.backupRestaurar(${b.id},'${esc((b.criado_em || "").slice(0, 16))}')">restaurar</button>
+           <button class="lnk danger" onclick="App.backupExcluir(${b.id})">excluir</button>`
+        : `<button class="lnk danger" onclick="App.backupExcluir(${b.id})">excluir</button>`;
+      return `<tr class="${b.status === "erro" ? "bloq" : ""}">
+        <td>${esc((b.criado_em || "").slice(0, 16))}</td>
+        <td>${origem}</td>
+        <td>${conteudo}</td>
+        <td>${fmtBytes(b.bytes)}</td>
+        <td class="bk-acoes">${acoes}</td>
+      </tr>`;
+    }).join("");
+    $("bk-body").innerHTML = `<div class="seg-tablewrap"><table class="seg-table">
+      <thead><tr><th>Quando</th><th>Origem</th><th>Conteúdo</th><th>Tamanho</th><th></th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="5">Nenhum backup ainda. Clique em “Fazer backup agora”.</td></tr>'}</tbody></table></div>`;
+  }
+  async function backupAgora(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "Fazendo backup…"; }
+    try {
+      const r = await fetch("/api/backup/run", { method: "POST" });
+      const js = await r.json().catch(() => ({}));
+      if (!r.ok || !js.ok) toast(js.erro || "Falha no backup.");
+      else toast("Backup concluído: " + js.linhas + " linhas.");
+    } catch (e) { toast("Falha no backup."); }
+    await renderBackup();
+  }
+  async function backupExcluir(id) {
+    if (!confirm("Excluir este backup? Esta ação não pode ser desfeita.")) return;
+    const r = await fetch("/api/backup/" + id, { method: "DELETE" });
+    if (!r.ok) { toast("Falha ao excluir."); return; }
+    toast("Backup excluído."); await renderBackup();
+  }
+  async function backupRestaurar(id, quando) {
+    if (!confirm("RESTAURAR o backup de " + quando + "?\n\nIsto SUBSTITUI todos os dados atuais pelos desse backup. Um backup de segurança do estado atual é feito automaticamente antes. Você precisará entrar novamente depois.")) return;
+    toast("Restaurando…");
+    const r = await fetch("/api/backup/" + id + "/restaurar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmar: true }),
+    });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok || !js.ok) { toast(js.erro || "Falha ao restaurar."); return; }
+    toast("Restaurado: " + js.linhas + " linhas. Entrando novamente…");
+    setTimeout(() => { location.href = "/logout"; }, 1800);
   }
 
   // Carrega os municípios das UFs de atuação (p/ reconhecer a 1ª cidade em campos
@@ -557,10 +645,11 @@ const App = (() => {
     $("f-status").innerHTML = selOpts(B.status, "Todos");
     $("f-faixa").innerHTML = selOpts(B.faixas_potencial, "Todos");
     $("f-pend").innerHTML = selOpts(B.pendencias_vsm || [], "Todas");
+    $("f-pendcad").innerHTML = selOpts(B.pendencias_cadastro || [], "Todas");
     $("f-resp").innerHTML = selOpts(B.responsaveis, "Todos");
     $("f-canal").innerHTML = selOpts(B.canais, "Todos");
     // f-uf usa onchange=App.ufMudou() no HTML; os demais recarregam direto
-    ["f-mr", "f-seg", "f-status", "f-faixa", "f-pend", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
+    ["f-mr", "f-seg", "f-status", "f-faixa", "f-pend", "f-pendcad", "f-vendeu", "f-resp", "f-canal"].forEach(id => $(id).addEventListener("change", recarregar));
     ["f-cred", "f-pot", "f-tel"].forEach(id => $(id).addEventListener("change", recarregar));
     $("legend").innerHTML = ["verde", "azul", "amarelo", "laranja", "vermelho"]
       .map(c => `<span><i style="background:${hexCor(c)}"></i>${esc(B.cor_label[c])}</span>`).join("") +
@@ -579,7 +668,7 @@ const App = (() => {
     const p = new URLSearchParams();
     const add = (id, key) => { const v = $(id).value; if (v) p.set(key, v); };
     add("f-uf", "uf"); add("f-mr", "microrregiao"); add("f-seg", "segmento");
-    add("f-status", "status"); add("f-faixa", "faixa"); add("f-pend", "pendencia"); add("f-vendeu", "vendeu");
+    add("f-status", "status"); add("f-faixa", "faixa"); add("f-pend", "pendencia"); add("f-pendcad", "pendencia_cad"); add("f-vendeu", "vendeu");
     add("f-resp", "responsavel"); add("f-canal", "canal");
     if ($("f-cred").checked) p.set("credenciado", "1");
     if ($("f-pot").checked) p.set("potencial", "1");
@@ -1357,7 +1446,68 @@ const App = (() => {
       catch (e) { gerColabs = []; }
       if (!Array.isArray(gerColabs)) gerColabs = [];
     }
+    // Status da sincronização da pasta de rede (indicador visual — carrega em paralelo).
+    try {
+      [gerSync, gerSyncRuns] = await Promise.all([
+        fetch("/api/sync/status").then(r => r.ok ? r.json() : null),
+        fetch("/api/sync/runs?limite=8").then(r => r.ok ? r.json() : []),
+      ]);
+      if (!Array.isArray(gerSyncRuns)) gerSyncRuns = [];
+    } catch (e) { gerSync = null; gerSyncRuns = []; }
     await recarregarGerencial();
+  }
+
+  // ---- Card "Sincronização da pasta de rede" (aba Gerencial) ----
+  const SYNC_BADGE = {
+    ok: { cls: "sync-ok", txt: "Sincronizado" },
+    sem_alteracao: { cls: "sync-neutro", txt: "Sem alteração" },
+    falha: { cls: "sync-falha", txt: "Falha" },
+  };
+  function syncDataFmt(s) {
+    if (!s) return "—";
+    // "YYYY-MM-DD HH:MM:SS" (BRT) -> "DD/MM HH:MM".
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(s));
+    return m ? `${m[3]}/${m[2]} ${m[4]}:${m[5]}` : esc(String(s));
+  }
+  function syncCardHTML() {
+    if (!gerSync) return "";
+    const b = SYNC_BADGE[gerSync.status] || { cls: "sync-neutro", txt: gerSync.status || "—" };
+    const st = gerSync.stats || {};
+    const alerta = !gerSync.token_configurado
+      ? `<div class="sync-alerta">⚠ Token do agente não configurado no servidor (SYNC_TOKEN). Veja agente-sync/LEIA-ME.md.</div>` : "";
+    const contadores = gerSync.stats ? `
+      <div class="sync-nums">
+        <span title="Arquivos encontrados na pasta">📁 ${Number(st.arquivos_encontrados) || 0}</span>
+        <span title="Arquivos novos">＋ ${Number(st.novos) || 0}</span>
+        <span title="Arquivos modificados">✎ ${Number(st.modificados) || 0}</span>
+        <span title="Arquivos removidos">－ ${Number(st.removidos) || 0}</span>
+        <span title="Arquivos sem alteração">= ${Number(st.inalterados) || 0}</span>
+        ${st.master_mudou ? `<span class="sync-imp" title="Resultado da importação do arquivo-mestre">↻ ${Number(st.import_criados) || 0} criadas · ${Number(st.import_atualizados) || 0} atualizadas</span>` : ""}
+      </div>` : "";
+    const msg = st.mensagem ? `<div class="sync-msg">${esc(st.mensagem)}</div>` : "";
+    const hist = gerSyncRuns.length ? `
+      <details class="sync-hist"><summary>Histórico (${gerSyncRuns.length})</summary>
+        <table class="sync-htab"><thead><tr><th>Quando</th><th>Origem</th><th>Status</th><th>Mensagem</th></tr></thead>
+          <tbody>${gerSyncRuns.map(r => {
+            const rb = SYNC_BADGE[r.status] || { cls: "sync-neutro", txt: r.status };
+            return `<tr><td>${syncDataFmt(r.executado_em)}</td><td>${esc(r.origem || "")}</td>
+              <td><span class="sync-badge ${rb.cls}">${esc(rb.txt)}</span></td><td>${esc(r.mensagem || "")}</td></tr>`;
+          }).join("")}</tbody></table>
+      </details>` : "";
+    return `
+      <div class="card wide sync-card">
+        <div class="hd"><h2>Sincronização da pasta de rede${infoIco("Integração automática com U:\\\\Matriz\\\\Back office\\\\Dep. Um agente local lê a pasta às terças e sextas 12:00 (BRT) e reimporta o cadastro-mestre na base, só quando o arquivo muda, sem duplicar. O Worker na nuvem não acessa a pasta diretamente.", "Sincronização da pasta")}</h2></div>
+        <div class="bd">
+          ${alerta}
+          <div class="sync-linha">
+            <div class="sync-bloco"><div class="sync-lbl">Última sincronização</div>
+              <div class="sync-val">${syncDataFmt(gerSync.ultima)} <span class="sync-badge ${b.cls}">${esc(b.txt)}</span></div></div>
+            <div class="sync-bloco"><div class="sync-lbl">Próxima execução</div>
+              <div class="sync-val">${syncDataFmt(gerSync.proxima)}</div></div>
+          </div>
+          ${contadores}${msg}${hist}
+        </div>
+      </div>`;
   }
 
   async function recarregarGerencial() {
@@ -1419,7 +1569,7 @@ const App = (() => {
       </div></div>`;
 
     if (!totalEquipe) {
-      box.innerHTML = filtro + kpis +
+      box.innerHTML = syncCardHTML() + filtro + kpis +
         `<div class="card wide"><div class="bd"><div class="empty">Nenhuma atualização registrada no período selecionado.</div></div></div>`;
       return;
     }
@@ -1459,7 +1609,7 @@ const App = (() => {
       <div class="card"><div class="hd"><h2>Ranking de colaboradores${infoIco("Total de atualizações de cada colaborador no período, do maior para o menor.", "Ranking")}</h2></div>
         <div class="bd">${chartRanking(d.ranking || [])}</div></div>`;
 
-    box.innerHTML = filtro + kpis +
+    box.innerHTML = syncCardHTML() + filtro + kpis +
       `<div class="ger-grid">${grafDia}${grafRank}</div>` + tabela +
       `<div class="card wide"><div class="hd"><h2>Histórico de atividades${infoIco("Cada ação registrada no período, com autor, data/hora e o que mudou. Rastreabilidade: uma linha por ação.", "Histórico de atividades")}</h2></div>
         <div class="bd" id="ger-ativ"><div class="empty">Carregando histórico…</div></div></div>`;
@@ -1695,6 +1845,32 @@ const App = (() => {
     return `<span class="fu-tag-vsm" title="${esc(title || txt)}" style="color:${hex};background:${hex}1f;border:1px solid ${hex}3d">${esc(txt)}</span>`;
   }
 
+  // Flag de PENDENCIA CADASTRAL (coluna BC do arquivo-mestre do formulario):
+  // situacao atual do parceiro no cadastro, INDEPENDENTE da origem do contato.
+  // Cor por flag (B.pendencia_cadastro_hex, vem do bootstrap); cinza se desconhecida.
+  function corPendCad(flag) {
+    const m = (B && B.pendencia_cadastro_hex) || {};
+    return m[flag] || hexCor("cinza");
+  }
+  function pendCadTitle(flag, obs) {
+    return "Situação do cadastro: " + (flag === "Outro" && obs ? obs : flag);
+  }
+  // Tag suave p/ a visualizacao externa de tags (cards do Follow-up).
+  function pendCadTag(x) {
+    const f = String((x && x.pendencia_cadastro) || "").trim();
+    if (!f) return ""; // sem situacao preenchida (coluna BC vazia) -> sem flag
+    return tagSuave(f, corPendCad(f), pendCadTitle(f, (x && x.pendencia_cadastro_obs) || ""));
+  }
+  // Pilula solida (destaque na ficha do parceiro).
+  function pendCadPill(e) {
+    const f = String((e && e.pendencia_cadastro) || "").trim();
+    if (!f) return "";
+    const obs = String((e && e.pendencia_cadastro_obs) || "").trim();
+    const hex = corPendCad(f);
+    const txt = f === "Outro" && obs ? `${f} · ${obs}` : f;
+    return `<span class="pill-pendcad" title="${esc(pendCadTitle(f, obs))}" style="display:inline-flex;align-items:center;font-size:12.5px;font-weight:700;border-radius:20px;padding:4px 12px;white-space:nowrap;color:#fff;background:${hex}">${esc(txt)}</span>`;
+  }
+
   // Tags VSM do card, a partir dos dados da Capilaridade-vsm + perfil comercial:
   //   1) Pendência (treino/contrato) — cor por classificação; neutra se vazia.
   //   2) Já fez venda (perfil comercial).
@@ -1733,7 +1909,7 @@ const App = (() => {
     return `
       <div class="fu-row" onclick="App.abrirFicha(${x.id})">
         <div class="fu-main">
-          <div class="fu-head"><b>${esc(x.nome)}</b>${origemBadge(x.origem_contato)}${tagsVSM(x)}</div>
+          <div class="fu-head"><b>${esc(x.nome)}</b>${origemBadge(x.origem_contato)}${pendCadTag(x)}${tagsVSM(x)}</div>
           <span class="fu-meta">${esc(loc)}${x.status ? " · " + esc(x.status) : ""}${x.responsavel ? " · " + esc(x.responsavel) : ""}</span>
           ${acao}
         </div>
@@ -2198,6 +2374,25 @@ const App = (() => {
         ? `<div class="${cls}"><label>${f.l}${ico}</label><input type="text" id="${id}" value="${esc(val)}" readonly disabled title="Definido no credenciamento — não editável." style="background:var(--soft);color:var(--muted);cursor:not-allowed"></div>`
         : `<div class="${cls}"><label>${f.l}${ico}</label><input type="text" id="${id}" value="" placeholder="Em branco até o credenciamento"></div>`;
     }
+    if (f.lock) {
+      // Campo protegido (CNPJ / Razão social): depois de preenchido e vinculado a
+      // uma ficha salva, fica somente-leitura. Só um admin pode desbloquear (com
+      // confirmação explícita, registrada na auditoria). Enquanto em branco ou em
+      // ficha nova, é editável normalmente (primeiro preenchimento).
+      const temValor = val != null && String(val).trim() !== "";
+      const existente = !!(cur && cur.id);
+      const liberado = camposLiberados.has(f.k);
+      if (existente && temValor && !liberado) {
+        const admin = !!(ME && ME.papel === "admin");
+        const acao = admin
+          ? `<button type="button" class="lock-btn" onclick="App.desbloquearCampo('${f.k}')">Desbloquear edição</button>`
+          : `<span class="lock-note">Somente administrador</span>`;
+        return `<div class="${cls}"><label>${f.l}${ico} <span class="lock-ico" title="Campo protegido contra alteração acidental">🔒</span></label>
+          <div class="lockrow"><input type="text" id="${id}" value="${esc(val)}" readonly data-lock="1" title="${admin ? "Protegido — use Desbloquear edição para corrigir." : "Protegido — apenas o administrador pode alterar."}">${acao}</div></div>`;
+      }
+      const aviso = liberado ? ` <span class="lock-open" title="Edição desbloqueada — a alteração será registrada">🔓 editável</span>` : "";
+      return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}${aviso}</label><input type="text" id="${id}" value="${esc(val ?? "")}"></div>`;
+    }
     if (f.tel) {
       // Telefone: valor inicial já formatado, máscara em tempo real (data-mask) e
       // placeholder guiando o padrão BR. data-cel marca campos que exigem celular.
@@ -2324,7 +2519,8 @@ const App = (() => {
       <div class="classbar">
         ${faixaPill(e.faixa_potencial)}
         <span class="pill-venda ${e.ja_vendeu ? "sim" : "nao"}">${e.ja_vendeu ? "✓ Já fez venda" : "Ainda não vendeu"}</span>
-        ${infoIco("Resumo da classificação: a faixa de potencial de vendas/mês e se a empresa já fez a primeira venda. Edite em 'Editar dados'.", "Classificação")}
+        ${pendCadPill(e)}
+        ${infoIco("Resumo da classificação: a faixa de potencial de vendas/mês e se a empresa já fez a primeira venda. A flag de situação do cadastro (coluna BC da planilha) é independente da origem do contato.", "Classificação")}
       </div>
       ${faixaSugeridaHTML(e)}
 
@@ -2386,7 +2582,37 @@ const App = (() => {
       </div>`;
   }
 
+  // Desbloqueio de campo protegido (CNPJ / Razão social) — só admin, com
+  // confirmação explícita. Libera o input in-place (sem re-render, p/ não perder
+  // edições em andamento); ao salvar, o flag desbloquear_cadastro autoriza o
+  // backend a gravar e registrar a alteração (quem, quando, antes/depois).
+  function desbloquearCampo(k) {
+    if (!(ME && ME.papel === "admin")) { toast("Apenas o administrador pode desbloquear este campo."); return; }
+    const rotulo = k === "cnpj" ? "CNPJ" : "Razão social";
+    const atualVal = (cur && cur[k] != null && String(cur[k]).trim() !== "") ? String(cur[k]) : "(vazio)";
+    if (!confirm(
+      "Desbloquear a edição de " + rotulo + "?\n\n" +
+      "Valor atual: " + atualVal + "\n\n" +
+      "Esta é uma correção cadastral sensível. A alteração ficará registrada na auditoria " +
+      "(usuário, data, hora, valor anterior e novo). Deseja continuar?"
+    )) return;
+    camposLiberados.add(k);
+    const el = $("fld-" + k);
+    if (!el) return;
+    el.readOnly = false;
+    el.removeAttribute("data-lock");
+    el.title = "Edição desbloqueada — a alteração será registrada.";
+    const row = el.closest(".lockrow");
+    const btn = row && row.querySelector(".lock-btn");
+    if (btn) btn.outerHTML = '<span class="lock-open" title="Edição desbloqueada">🔓</span>';
+    const lab = el.closest(".fld") && el.closest(".fld").querySelector("label .lock-ico");
+    if (lab) lab.outerHTML = '<span class="lock-open" title="Edição desbloqueada">🔓</span>';
+    el.focus();
+    toast(rotulo + " desbloqueado. Edite e salve para registrar a correção.");
+  }
+
   function renderDrawer() {
+    camposLiberados = new Set(); // toda (re)renderização do drawer volta ao estado travado
     const e = cur;
     const nova = !e || !e.id;
     const nome = nova ? "Novo lojista" : (e.nome_fantasia || e.razao_social || "Empresa");
@@ -2484,6 +2710,8 @@ const App = (() => {
       telErros.push(f.l);
     }));
     if (telErros.length) { toast("Telefone inválido: " + telErros.join(", ") + ". Use DDD + número (celular com 9 dígitos)."); return; }
+    // Só pede desbloqueio dos campos protegidos quando o admin realmente liberou um.
+    if (camposLiberados.size) dados.desbloquear_cadastro = true;
     const nova = !cur || !cur.id;
     const url = nova ? "/api/empresas" : "/api/empresas/" + cur.id;
     const r = await fetch(url, { method: nova ? "POST" : "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(dados) });
@@ -2616,7 +2844,7 @@ const App = (() => {
 
   return {
     init, view, ufMudou, limparFiltros, buscaDebounced, tema,
-    abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus, aplicarFaixaSugerida,
+    abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus, aplicarFaixaSugerida, desbloquearCampo,
     novoContato, cancelarContato, addContato, delContato, addFilial, delFilial, excluir, realce,
     apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
@@ -2628,6 +2856,7 @@ const App = (() => {
     toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,
     toggleGerencial, gerPreset, gerCustom, gerToggleColab, gerTodosColab,
     setPapel, abrirMinhasSessoes, logoutAll, abrirSeguranca, segAba, segRevogar,
+    abrirBackup, backupAgora, backupExcluir, backupRestaurar,
   };
 })();
 

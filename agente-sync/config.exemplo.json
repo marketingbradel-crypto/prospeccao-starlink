@@ -1,0 +1,8 @@
+{
+  "_comentario": "Copie este arquivo para config.local.json e preencha o Token. config.local.json NAO e versionado (fica no .gitignore).",
+  "PastaOrigem": "\\\\192.168.172.145\\Documentos\\Matriz\\Back office\\Dep",
+  "PastaFallback": "U:\\Matriz\\Back office\\Dep",
+  "ArquivoMestre": "Cadastros Starlink - consolidado Oficial.xlsx",
+  "ApiBase": "https://prospeccao-starlink.bradel.workers.dev",
+  "Token": "COLE_AQUI_O_MESMO_VALOR_DO_SECRET_SYNC_TOKEN"
+}

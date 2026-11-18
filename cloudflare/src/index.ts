@@ -15,6 +15,11 @@ interface Env {
   APP_DEFAULT_PASSWORD?: string; // senha padrao do 1o acesso dos demais logins (secret opcional)
   PLACES_API_KEY?: string; // chave do Google Places API (wrangler secret put PLACES_API_KEY)
   SERPER_API_KEY?: string;  // chave do Serper.dev (wrangler secret put SERPER_API_KEY) — tem precedencia
+  SYNC_TOKEN?: string; // token do agente de sincronizacao da pasta de rede (wrangler secret put SYNC_TOKEN)
+  // Backup externo (isolamento real): bucket R2 opcional. Hoje o backup fica no
+  // proprio D1 (decisao do usuario); defina este binding no wrangler.jsonc + crie
+  // o bucket para passar a espelhar os backups fora do banco. Ver runBackup().
+  BACKUPS?: R2Bucket;
 }
 
 // Colunas da empresa (ordem = modelo), portado de db.EMPRESA_CAMPOS.
@@ -236,6 +241,16 @@ function montarEmpresa(data: Row, novo = true): Row {
 
   if ("cnpj" in e) e.cnpj_norm = soDigitos(e.cnpj);
 
+  // Pendencia CADASTRAL: so entra quando a linha trouxe a coluna BC ("Situacao do
+  // cadastro (auto)"), capturada em linhaParaEmpresa como pendencia_cadastro_src.
+  // E classificada SEM olhar a origem do contato; "" limpa a flag (autoridade da
+  // planilha). Ver L.classificarPendenciaCadastro.
+  if ("pendencia_cadastro_src" in data) {
+    const { flag, obs } = L.classificarPendenciaCadastro(data.pendencia_cadastro_src);
+    e.pendencia_cadastro = flag;
+    e.pendencia_cadastro_obs = obs;
+  }
+
   if (novo) {
     if (!e.status) e.status = "Aguardando contato";
     if (!e.canal) e.canal = "Telecom";
@@ -246,6 +261,18 @@ function montarEmpresa(data: Row, novo = true): Row {
   e.atualizado_em = agora();
   return e;
 }
+
+// Campos de identidade cadastral que, depois de preenchidos e vinculados a uma
+// ficha salva, ficam TRAVADOS: so um admin que acione explicitamente o
+// "Desbloquear edicao" (flag desbloquear_cadastro no PUT) pode altera-los.
+// Qualquer outra requisicao — operador, UI sem desbloqueio ou chamada externa —
+// tem o valor antigo preservado, impossibilitando corromper CNPJ/Razao social
+// por engano ou manipulacao direta. Enquanto o campo ainda esta em branco, o
+// primeiro preenchimento e livre (ex.: ficha do VSM que entrou sem CNPJ).
+const CAMPOS_PROTEGIDOS: Array<[string, string]> = [
+  ["cnpj", "CNPJ"],
+  ["razao_social", "Razão social"],
+];
 
 async function empresaDupCnpj(db: D1Database, cnpjNorm: string, excluirId?: number): Promise<number | null> {
   if (!cnpjNorm) return null;
@@ -364,7 +391,8 @@ async function proximoCodigo(db: D1Database): Promise<string> {
 function stmtInserirEmpresa(db: D1Database, e: Row): D1PreparedStatement {
   const cols = [
     ...EMPRESA_CAMPOS.filter((c) => c in e),
-    ...["cnpj_norm", "criado_em", "atualizado_em"].filter((c) => c in e),
+    // Colunas de sistema fora do modelo editavel: derivadas/somente-leitura.
+    ...["pendencia_cadastro", "pendencia_cadastro_obs", "cnpj_norm", "criado_em", "atualizado_em"].filter((c) => c in e),
   ];
   const placeholders = cols.map(() => "?").join(",");
   const sql = `INSERT INTO empresas (${cols.join(",")}) VALUES (${placeholders})`;
@@ -476,6 +504,8 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
   if (faixa) { where.push("faixa_potencial=?"); params.push(faixa); }
   const pend = limpar(q.pendencia);
   if (pend) { where.push("pendencia_vsm=?"); params.push(pend); }
+  const pendCad = limpar(q.pendencia_cad);
+  if (pendCad) { where.push("pendencia_cadastro=?"); params.push(pendCad); }
   const vendeu = String(q.vendeu ?? "").toLowerCase();
   if (["1", "true", "sim"].includes(vendeu)) where.push("ja_vendeu=1");
   else if (["0", "nao", "não", "false"].includes(vendeu)) where.push("(ja_vendeu=0 OR ja_vendeu IS NULL)");
@@ -840,8 +870,24 @@ const COOKIE_ATTRS = "HttpOnly; Secure; SameSite=Lax; Path=/";
 // autenticado fica em c.get("usuario").
 app.use("*", async (c, next) => {
   const env = c.env;
-  if (!env.APP_PASSWORD) return c.text("Login não configurado (defina o secret APP_PASSWORD).", 503);
   const path = new URL(c.req.url).pathname;
+
+  // Agente de sincronizacao da pasta de rede: ingestao/registro autenticados por
+  // TOKEN (header X-Sync-Token == secret SYNC_TOKEN), sem cookie de sessao. O
+  // Worker na nuvem nao alcanca a pasta U:\...; quem le a pasta e um agente local
+  // dentro da rede, que EMPURRA o arquivo-mestre para ca. Usuario sintetico
+  // 'sistema' (papel operador: passa no RBAC de escrita, nao conta como
+  // produtividade humana). Comparacao em tempo ~constante contra timing attacks.
+  if (path === "/api/sync/ingest" || path === "/api/sync/run") {
+    const tok = c.req.header("X-Sync-Token") || "";
+    if (env.SYNC_TOKEN && tok && igualConstante(tok, env.SYNC_TOKEN)) {
+      c.set("usuario", { username: "sistema", papel: "operador", admin: false, mustChange: false });
+      return next();
+    }
+    return c.json({ erro: "Token de sincronização inválido." }, 401);
+  }
+
+  if (!env.APP_PASSWORD) return c.text("Login não configurado (defina o secret APP_PASSWORD).", 503);
 
   if (path === "/login") {
     if (c.req.method === "POST") {
@@ -941,6 +987,8 @@ app.get("/api/bootstrap", (c) => {
     status: L.STATUS,
     status_vivensis: L.STATUS_VIVENSIS,
     pendencias_vsm: L.PENDENCIAS_VSM,
+    pendencias_cadastro: L.PENDENCIAS_CADASTRO,
+    pendencia_cadastro_hex: L.PENDENCIA_CADASTRO_HEX,
     canais: L.CANAIS,
     responsaveis: L.RESPONSAVEIS,
     origens: L.ORIGENS,
@@ -1029,6 +1077,28 @@ app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
   // ID VSM e imutavel depois de definido: se a empresa ja tem um, ignora
   // qualquer valor que venha do formulario (a UI tambem bloqueia o campo).
   if (String(atual.id_vsm ?? "").trim() !== "") e.id_vsm = atual.id_vsm;
+
+  // --- Protecao de integridade cadastral (CNPJ + Razao social) ---
+  // Depois de preenchidos e vinculados a ficha, so mudam com desbloqueio
+  // explicito de um ADMIN. Sem isso (operador, UI travada, requisicao externa),
+  // o valor atual e restaurado — a tentativa de alteracao e simplesmente ignorada.
+  const desbloqueado = ehAdminPapel(c.get("usuario")) &&
+    (data.desbloquear_cadastro === true || data.desbloquear_cadastro === "true");
+  const protegidosAlterados: Array<{ campo: string; rotulo: string; antes: string; depois: string }> = [];
+  for (const [campo, rotulo] of CAMPOS_PROTEGIDOS) {
+    const antesVal = String(atual[campo] ?? "").trim();
+    if (!antesVal) continue;            // ainda em branco → primeiro preenchimento livre
+    if (!(campo in e)) continue;        // campo nao veio no payload → nada a fazer
+    const depoisVal = String(e[campo] ?? "").trim();
+    if (depoisVal === antesVal) continue; // inalterado
+    if (desbloqueado) {
+      protegidosAlterados.push({ campo, rotulo, antes: String(atual[campo] ?? ""), depois: String(e[campo] ?? "") });
+    } else {
+      e[campo] = atual[campo];          // preserva: ignora a tentativa de alteracao
+      if (campo === "cnpj") e.cnpj_norm = atual.cnpj_norm; // mantem o indice coerente
+    }
+  }
+
   const dup = await empresaDupCnpj(c.env.DB, e.cnpj_norm, eid);
   if (dup) return c.json({ erro: "Outra empresa já usa este CNPJ.", id: dup }, 409);
   // Diff dos campos que realmente mudaram (ignora carimbos automaticos).
@@ -1045,6 +1115,17 @@ app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
       acao: "empresa_edit", empresa_id: eid,
       empresa_nome: String(atual.razao_social || atual.nome_fantasia || ""),
       campo: mudou.join(", "), antes: JSON.stringify(antes), depois: JSON.stringify(depois),
+    });
+  }
+  // Desbloqueio de campo protegido: evento de seguranca dedicado (quem/quando =
+  // ts/dia/usuario automaticos; valores anterior e novo nos campos antes/depois).
+  if (protegidosAlterados.length) {
+    await logSeguranca(c, "cadastro_desbloqueado", {
+      empresa_id: eid,
+      empresa_nome: String(atual.razao_social || atual.nome_fantasia || ""),
+      campo: protegidosAlterados.map((p) => p.rotulo).join(", "),
+      antes: protegidosAlterados.map((p) => `${p.rotulo}: ${p.antes || "(vazio)"}`).join(" | "),
+      depois: protegidosAlterados.map((p) => `${p.rotulo}: ${p.depois || "(vazio)"}`).join(" | "),
     });
   }
   return c.json({ id: eid });
@@ -1334,6 +1415,7 @@ const ACOES_SEGURANCA_LABEL: Record<string, string> = {
   usuario_novo: "Criou usuário", usuario_reset: "Resetou senha de usuário", usuario_remove: "Removeu usuário",
   papel_alterado: "Alterou papel (RBAC)", perm_gerencial: "Alterou acesso gerencial",
   sessao_revogada: "Revogou sessão", export: "Exportou dados",
+  cadastro_desbloqueado: "Desbloqueou cadastro (CNPJ/Razão social)",
 };
 
 // Todas as sessoes ativas (todos os usuarios) — para a lista de "usuários/sessões".
@@ -1828,7 +1910,8 @@ app.get("/api/follow-up", async (c) => {
     `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
             telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
             data_ultimo_contato, faixa_potencial, origem_contato,
-            pendencia_vsm, ja_vendeu, vendas_vsm, instalacoes_vsm
+            pendencia_vsm, pendencia_cadastro, pendencia_cadastro_obs,
+            ja_vendeu, vendas_vsm, instalacoes_vsm
        FROM empresas`
   ).all<Row>();
 
@@ -1846,6 +1929,8 @@ app.get("/api/follow-up", async (c) => {
       faixa_potencial: r.faixa_potencial || "",
       origem_contato: r.origem_contato || "",
       pendencia_vsm: r.pendencia_vsm || "",
+      pendencia_cadastro: r.pendencia_cadastro || "",
+      pendencia_cadastro_obs: r.pendencia_cadastro_obs || "",
       ja_vendeu: toBoolInt(r.ja_vendeu) ? 1 : 0,
       vendas_vsm: Number(r.vendas_vsm) || 0,
       instalacoes_vsm: Number(r.instalacoes_vsm) || 0,
@@ -2750,63 +2835,94 @@ app.get("/api/export.xlsx", async (c) => {
   return xlsxResponse(c, wb, "empresas_starlink.xlsx");
 });
 
+// Aliases dos cabecalhos do FORMULARIO completo (planilha "Cadastros Starlink -
+// consolidado Oficial.xlsx") -> campo interno. O arquivo-mestre da pasta de rede
+// usa os titulos do Google Forms, que em sua maioria NAO batem com MODELO_COLS.
+// Mapeia-se apenas o subconjunto de ALTA CONFIANCA — como o import e merge
+// nao-destrutivo (so preenche campo vazio), mapear a mais seria seguro, porem
+// deixamos os ambiguos (CPF, Nº Lead, Quota diaria) de fora por ora. Extensivel.
+// Enderecos (Logradouro/Numero/Complemento) sao compostos em linhaParaEmpresa.
+const FORMS_ALIASES: Record<string, string> = {
+  "razão social": "razao_social",
+  "nome fantasia": "nome_fantasia",
+  "cnpj": "cnpj",
+  "inscrição estadual (digite \"isento\" se não houver)": "inscricao_estadual",
+  "e-mail": "email_comercial",
+  "telefone (com ddd)": "telefone_comercial",
+  "whatsapp (com ddd)": "whatsapp",
+  "cargo / função": "resp_cargo",
+  "possui loja física / ponto de venda?": "loja_fisica",
+  "quantidade de lojas / pontos de venda": "qtd_filiais",
+  "já atua com venda de produtos de tecnologia / telecom / internet?": "trabalha_telecom",
+  "possui equipe técnica de instalação?": "equipe_tecnica",
+  "estado (uf) principal de atuação": "uf",
+  "cidade(s) de cobertura (liste as principais)": "cidade",
+  "nível de interesse no credenciamento": "interesse_parceiro",
+  "como conheceu a oportunidade de credenciamento?": "origem_contato",
+  "cep": "cep",
+  "logradouro": "endereco", // base do endereco; numero/complemento sao anexados
+  "nome do proprietario": "resp_nome",
+  "nº cad vivensis": "id_vsm",
+};
+
 function linhaParaEmpresa(d: Row): Row {
   const tituloParaCol: Record<string, string> = {};
   for (const [t, col] of MODELO_COLS) tituloParaCol[t.trim().toLowerCase()] = col;
   const colsSet = new Set<string>([...MODELO_COLS.map(([, col]) => col), ...CAMPOS_TEXTO]);
   const out: Row = {};
+  // Partes do endereco vindas do formulario (compostas no fim).
+  let logradouro = "", numero = "", complemento = "";
   for (const [k, v] of Object.entries(d)) {
     const key = (k || "").trim().toLowerCase();
-    const col = tituloParaCol[key] ?? (colsSet.has(key) ? key : null);
-    if (col) out[col] = v;
+    if (key === "número" || key === "numero") { numero = String(v ?? "").trim(); continue; }
+    if (key === "complemento") { complemento = String(v ?? "").trim(); continue; }
+    // Coluna BC do arquivo-mestre ("Situacao do cadastro (auto)") -> pendencia
+    // cadastral (campo interno; classificado em montarEmpresa). Tratada a parte:
+    // e read-only e NAO passa pelo merge normal (refresh autoritativo no import).
+    if (L.norm(key).startsWith("situacao do cadastro")) { out.pendencia_cadastro_src = String(v ?? "").trim(); continue; }
+    const col = tituloParaCol[key] ?? FORMS_ALIASES[key] ?? (colsSet.has(key) ? key : null);
+    if (!col) continue;
+    if (col === "endereco" && (tituloParaCol[key] == null)) { logradouro = String(v ?? "").trim(); continue; }
+    out[col] = v;
+  }
+  // Compoe o endereco a partir de Logradouro + Numero + Complemento (formulario).
+  if (logradouro || numero || complemento) {
+    const partes = [logradouro, numero, complemento].map((s) => s.trim()).filter(Boolean);
+    if (partes.length && !out.endereco) out.endereco = partes.join(", ");
   }
   return out;
 }
 
-app.post("/api/import", async (c) => {
-  // Import em massa e restrito a usuarios nominais (bradel/jossy). Qualquer outro
-  // recebe 403 mesmo que a UI tivesse mostrado o botao.
-  if (!podeImportar(c.get("usuario"), c.env)) {
-    return c.json({ erro: "Import em massa nao disponivel para este usuario." }, 403);
-  }
-  // Leitura/parse do arquivo isolada: multipart torto ou arquivo invalido
-  // retorna erro claro em JSON em vez de um 500 cru (o parser de FormData do
-  // Worker estoura em partes sem `name`).
-  let registros: Row[] = [];
-  try {
-    const form = await c.req.formData();
-    const f = form.get("arquivo");
-    if (!f || typeof f === "string") {
-      return c.json({ erro: "Envie um arquivo .xlsx ou .csv no campo 'arquivo'." }, 400);
-    }
-    const file = f as File;
-    const nome = (file.name || "").toLowerCase();
-    const buf = await file.arrayBuffer();
-    if (nome.endsWith(".csv")) {
-      const texto = new TextDecoder("utf-8").decode(buf).replace(/^﻿/, "");
-      const wb = XLSX.read(texto, { type: "string", raw: true });
-      registros = XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-    } else {
-      const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
-      registros = XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
-    }
-  } catch (ex: any) {
-    return c.json(
-      { erro: "Não consegui ler o arquivo. Use o modelo (.xlsx) ou um .csv. Detalhe: " + (ex?.message ?? ex) },
-      400
-    );
-  }
+// Resultado consolidado de um import em massa.
+type ResultadoImport = { criados: number; atualizados: number; mesclados: number; ignorados: number; erros: string[] };
 
+// Le um arquivo (.xlsx ou .csv) em linhas-objeto da 1a planilha. Usado pelo
+// import manual (/api/import) e pela sincronizacao automatica (/api/sync/ingest).
+function parseArquivoRegistros(buf: ArrayBuffer, nome: string): Row[] {
+  if ((nome || "").toLowerCase().endsWith(".csv")) {
+    const texto = new TextDecoder("utf-8").decode(buf).replace(/^﻿/, "");
+    const wb = XLSX.read(texto, { type: "string", raw: true });
+    return XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+  }
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+  return XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
+}
+
+// Nucleo do import em massa: trava anti-duplicata em 3 camadas (banco por
+// CNPJ/ID VSM/nome+UF+cidade; dedup dentro do proprio lote) + merge
+// nao-destrutivo (so preenche campo vazio; celula vazia nunca apaga dado).
+// Compartilhado pelo import manual e pela sincronizacao da pasta de rede.
+async function importarRegistros(db: D1Database, registros: Row[]): Promise<ResultadoImport> {
   let atualizados = 0, ignorados = 0, mesclados = 0;
   const erros: string[] = [];
   const novos: Row[] = [];
   // Numero inicial do codigo calculado UMA vez; incrementa em memoria (evita
   // 1 SELECT por linha e o antigo bug de gerar codigos repetidos).
-  let proxNum = await proximoCodigoNum(c.env.DB);
+  let proxNum = await proximoCodigoNum(db);
 
   // Trava anti-duplicata: indice das fichas existentes (1 query) + indice das
   // fichas novas deste arquivo (dedup dentro do proprio lote).
-  const idx = await carregarIndiceDup(c.env.DB);
+  const idx = await carregarIndiceDup(db);
   const pend: PendIdx = { cnpj: new Map(), vsm: new Map(), nome: new Map() };
 
   let i = 1;
@@ -2820,7 +2936,7 @@ app.post("/api/import", async (c) => {
       // 1) Ja existe no banco (CNPJ / ID VSM / nome+UF+cidade)? Preenche lacunas.
       const dup = acharDupIndice(idx, data);
       if (dup) {
-        const atual = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(dup).first<Row>();
+        const atual = await db.prepare("SELECT * FROM empresas WHERE id=?").bind(dup).first<Row>();
         const e = montarEmpresa(data, false);
         // ID VSM e imutavel depois de definido.
         if (atual && String(atual.id_vsm ?? "").trim() !== "") e.id_vsm = atual.id_vsm;
@@ -2828,11 +2944,17 @@ app.post("/api/import", async (c) => {
         // vazia do arquivo nunca apaga dado existente.
         for (const k of Object.keys(e)) {
           if (k === "atualizado_em") continue;
+          // Pendencia cadastral e AUTORITATIVA: reflete sempre a coluna BC (inclusive
+          // quando esvazia), nunca o merge nao-destrutivo. So nao reescreve se igual.
+          if (k === "pendencia_cadastro" || k === "pendencia_cadastro_obs") {
+            if (atual && String(atual[k] ?? "") === String(e[k] ?? "")) delete e[k];
+            continue;
+          }
           if (estaVazio(e[k]) || (atual && !estaVazio(atual[k]))) delete e[k];
         }
         if (Object.keys(e).some((k) => k !== "atualizado_em")) {
           e.atualizado_em = agora();
-          await atualizarEmpresa(c.env.DB, dup, e);
+          await atualizarEmpresa(db, dup, e);
           const cn = soDigitos(e.cnpj); if (cn) idx.cnpj.set(cn, dup); // ficha pode ter ganho CNPJ
           atualizados += 1;
         } else {
@@ -2864,23 +2986,455 @@ app.post("/api/import", async (c) => {
     }
   }
 
-  const criados = await inserirEmpresasLote(c.env.DB, novos, erros);
+  const criados = await inserirEmpresasLote(db, novos, erros);
+  return { criados, atualizados, mesclados, ignorados, erros };
+}
+
+app.post("/api/import", async (c) => {
+  // Import em massa e restrito a usuarios nominais (bradel/jossy). Qualquer outro
+  // recebe 403 mesmo que a UI tivesse mostrado o botao.
+  if (!podeImportar(c.get("usuario"), c.env)) {
+    return c.json({ erro: "Import em massa nao disponivel para este usuario." }, 403);
+  }
+  // Leitura/parse do arquivo isolada: multipart torto ou arquivo invalido
+  // retorna erro claro em JSON em vez de um 500 cru (o parser de FormData do
+  // Worker estoura em partes sem `name`).
+  let registros: Row[] = [];
+  try {
+    const form = await c.req.formData();
+    const f = form.get("arquivo");
+    if (!f || typeof f === "string") {
+      return c.json({ erro: "Envie um arquivo .xlsx ou .csv no campo 'arquivo'." }, 400);
+    }
+    const file = f as File;
+    registros = parseArquivoRegistros(await file.arrayBuffer(), file.name || "");
+  } catch (ex: any) {
+    return c.json(
+      { erro: "Não consegui ler o arquivo. Use o modelo (.xlsx) ou um .csv. Detalhe: " + (ex?.message ?? ex) },
+      400
+    );
+  }
+
+  const r = await importarRegistros(c.env.DB, registros);
   // Import e acao em lote: registra como origem 'sistema' (NAO conta como
   // produtividade humana no painel Gerencial), apenas para rastreabilidade.
   await registrarAuditoria(c, {
     acao: "import", origem: "sistema",
-    depois: `criados=${criados}, atualizados=${atualizados}, mesclados=${mesclados}, ignorados=${ignorados}`,
+    depois: `criados=${r.criados}, atualizados=${r.atualizados}, mesclados=${r.mesclados}, ignorados=${r.ignorados}`,
   });
-  return c.json({ criados, atualizados, mesclados, ignorados, erros });
+  return c.json(r);
+});
+
+// --------------------------------------------------------------------------
+// Sincronizacao automatica com a pasta de rede (U:\Matriz\Back office\Dep).
+// O Worker (nuvem) NAO alcanca a pasta; um AGENTE LOCAL (agente-sync/) le a pasta
+// nas tercas/sextas 12:00 BRT, detecta se o arquivo-mestre mudou (hash) e EMPURRA
+// o arquivo para ca. Aqui: ingestao (reimport nao-destrutivo), registro de
+// execucao (historico §5) e status para a UI. Ver agente-sync/LEIA-ME.md.
+// --------------------------------------------------------------------------
+
+// Tabela de historico de execucoes. Criada sob demanda (resiliente a migracao
+// 0017 nao aplicada no remoto, no mesmo padrao de ensurePesquisas/ensurePendentes).
+let syncRunsPronta = false;
+async function ensureSyncRuns(db: D1Database): Promise<void> {
+  if (syncRunsPronta) return;
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS sync_runs (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       executado_em TEXT, origem TEXT,
+       arquivos_encontrados INTEGER DEFAULT 0, novos INTEGER DEFAULT 0,
+       modificados INTEGER DEFAULT 0, removidos INTEGER DEFAULT 0, inalterados INTEGER DEFAULT 0,
+       master_mudou INTEGER DEFAULT 0,
+       import_criados INTEGER DEFAULT 0, import_atualizados INTEGER DEFAULT 0,
+       import_mesclados INTEGER DEFAULT 0, import_ignorados INTEGER DEFAULT 0,
+       status TEXT, mensagem TEXT, detalhe TEXT)`
+  ).run();
+  syncRunsPronta = true;
+}
+
+// Inteiro nao-negativo a partir de um valor de form/JSON (default 0).
+function intDe(v: any): number { const n = parseInt(String(v ?? "").trim(), 10); return Number.isFinite(n) && n >= 0 ? n : 0; }
+
+// Grava uma execucao no historico + atualiza os marcadores em `meta` (para o
+// indicador visual da UI). Uma linha por execucao do agente.
+async function gravarSyncRun(db: D1Database, run: Row): Promise<void> {
+  await ensureSyncRuns(db);
+  await db.prepare(
+    `INSERT INTO sync_runs
+       (executado_em,origem,arquivos_encontrados,novos,modificados,removidos,inalterados,
+        master_mudou,import_criados,import_atualizados,import_mesclados,import_ignorados,status,mensagem,detalhe)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    run.executado_em, run.origem || "agendado",
+    intDe(run.arquivos_encontrados), intDe(run.novos), intDe(run.modificados), intDe(run.removidos), intDe(run.inalterados),
+    run.master_mudou ? 1 : 0,
+    intDe(run.import_criados), intDe(run.import_atualizados), intDe(run.import_mesclados), intDe(run.import_ignorados),
+    run.status || "ok", run.mensagem || "", run.detalhe || ""
+  ).run();
+  await metaSet(db, "sync_last_run", String(run.executado_em || agora()));
+  await metaSet(db, "sync_last_status", String(run.status || "ok"));
+  await metaSet(db, "sync_last_stats", JSON.stringify(run));
+}
+
+// Proxima execucao agendada: ter(2)/sex(5) as 12:00 BRT (UTC-3 fixo). O gatilho
+// real roda no Agendador do Windows; aqui so calculamos a previsao para a UI.
+function proximaSync(): string {
+  const nowMs = Date.now();
+  for (let i = 0; i <= 10; i++) {
+    const diaBRT = FMT_DIA.format(new Date(nowMs + i * 86400000)); // "YYYY-MM-DD" em BRT
+    const dow = new Date(diaBRT + "T12:00:00-03:00").getUTCDay();
+    if (dow === 2 || dow === 5) {
+      const cand = diaBRT + " 12:00:00";
+      if (tsEpoch(cand) > nowMs) return cand;
+    }
+  }
+  return "";
+}
+
+// POST /api/sync/ingest — o agente envia o arquivo-mestre + resumo da varredura.
+// Auth por X-Sync-Token (ver middleware). Reimport incremental: se o hash do
+// arquivo for igual ao ultimo ja processado, NAO reprocessa (grava "sem_alteracao").
+app.post("/api/sync/ingest", async (c) => {
+  const db = c.env.DB;
+  const executado_em = agora();
+  let sha256 = "", origem = "agendado", nomeArq = "";
+  const scan = { arquivos_encontrados: 0, novos: 0, modificados: 0, removidos: 0, inalterados: 0 };
+  let buf: ArrayBuffer | null = null;
+  try {
+    const form = await c.req.formData();
+    const f = form.get("arquivo");
+    if (!f || typeof f === "string") return c.json({ erro: "Envie o arquivo-mestre no campo 'arquivo'." }, 400);
+    const file = f as File;
+    nomeArq = file.name || "";
+    buf = await file.arrayBuffer();
+    sha256 = String(form.get("sha256") || "").trim().toLowerCase();
+    origem = String(form.get("origem") || "agendado").trim() || "agendado";
+    scan.arquivos_encontrados = intDe(form.get("arquivos_encontrados"));
+    scan.novos = intDe(form.get("novos"));
+    scan.modificados = intDe(form.get("modificados"));
+    scan.removidos = intDe(form.get("removidos"));
+    scan.inalterados = intDe(form.get("inalterados"));
+  } catch (ex: any) {
+    const run = { executado_em, origem, ...scan, master_mudou: 0, status: "falha", mensagem: "Falha ao ler o envio: " + (ex?.message ?? ex) };
+    await gravarSyncRun(db, run);
+    return c.json({ erro: run.mensagem }, 400);
+  }
+
+  // Nao reprocessa arquivo identico ao ultimo (incremental — §3/§4 do brief).
+  const hashAnterior = (await metaGet(db, "sync_master_hash")) || "";
+  if (sha256 && sha256 === hashAnterior) {
+    const run = { executado_em, origem, ...scan, master_mudou: 0, status: "sem_alteracao", mensagem: "Arquivo-mestre sem alteração (hash igual ao último)." };
+    await gravarSyncRun(db, run);
+    return c.json({ ...run, pulado: true });
+  }
+
+  try {
+    const registros = parseArquivoRegistros(buf!, nomeArq);
+    const r = await importarRegistros(db, registros);
+    if (sha256) await metaSet(db, "sync_master_hash", sha256);
+    const run = {
+      executado_em, origem, ...scan, master_mudou: 1, status: "ok",
+      import_criados: r.criados, import_atualizados: r.atualizados, import_mesclados: r.mesclados, import_ignorados: r.ignorados,
+      mensagem: `Importação: ${r.criados} criadas, ${r.atualizados} atualizadas, ${r.mesclados} mescladas, ${r.ignorados} ignoradas.`,
+      detalhe: (r.erros || []).slice(0, 20).join(" | "),
+    };
+    await gravarSyncRun(db, run);
+    await registrarAuditoria(c, { acao: "sync_import", origem: "sistema", depois: run.mensagem });
+    return c.json({ ...run, erros: r.erros });
+  } catch (ex: any) {
+    const run = { executado_em, origem, ...scan, master_mudou: 1, status: "falha", mensagem: "Falha ao importar o arquivo-mestre: " + (ex?.message ?? ex) };
+    await gravarSyncRun(db, run);
+    return c.json({ erro: run.mensagem }, 500);
+  }
+});
+
+// POST /api/sync/run — registra uma execucao SEM arquivo: pasta indisponivel
+// (falha), nada mudou (sem_alteracao) ou outro status. Mantem o historico completo.
+app.post("/api/sync/run", async (c) => {
+  const b = await jsonBody(c);
+  const run = {
+    executado_em: agora(),
+    origem: String(b.origem || "agendado").trim() || "agendado",
+    arquivos_encontrados: intDe(b.arquivos_encontrados), novos: intDe(b.novos),
+    modificados: intDe(b.modificados), removidos: intDe(b.removidos), inalterados: intDe(b.inalterados),
+    master_mudou: 0,
+    status: String(b.status || "ok").trim() || "ok",
+    mensagem: String(b.mensagem || "").slice(0, 500),
+  };
+  await gravarSyncRun(c.env.DB, run);
+  return c.json({ ok: true, ...run });
+});
+
+// GET /api/sync/status — indicador visual (ultima execucao + proxima agendada).
+app.get("/api/sync/status", async (c) => {
+  const db = c.env.DB;
+  await ensureSyncRuns(db);
+  const ultima = await metaGet(db, "sync_last_run");
+  const status = await metaGet(db, "sync_last_status");
+  let stats: any = null;
+  try { stats = JSON.parse((await metaGet(db, "sync_last_stats")) || "null"); } catch { stats = null; }
+  return c.json({
+    ultima, status, stats,
+    proxima: proximaSync(),
+    token_configurado: !!c.env.SYNC_TOKEN,
+    pasta: "U:\\Matriz\\Back office\\Dep",
+    arquivo_mestre: "Cadastros Starlink - consolidado Oficial.xlsx",
+  });
+});
+
+// GET /api/sync/runs — historico das ultimas execucoes.
+app.get("/api/sync/runs", async (c) => {
+  const db = c.env.DB;
+  await ensureSyncRuns(db);
+  const lim = Math.min(100, Math.max(1, intDe(c.req.query("limite")) || 20));
+  const { results } = await db.prepare(
+    "SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?").bind(lim).all<Row>();
+  return c.json(results ?? []);
+});
+
+// --------------------------------------------------------------------------
+// Backup automatico, recorrente e autonomo (Cron Trigger diario a MEIA-NOITE BRT).
+// Faz um dump COMPLETO do banco — schema (DDL) + todas as linhas de todas as
+// tabelas — serializa em JSON, comprime (gzip) e guarda como UMA linha na tabela
+// `backups`. Roda via `scheduled` sem nenhum usuario conectado. Retencao: mantem
+// BACKUP_RETENCAO_DIAS dias e apaga automaticamente os mais antigos.
+//
+// NOTA DE SEGURANCA (decisao do usuario em 2026-11-18): o backup fica no PROPRIO
+// D1. Isso protege contra apagoes/edicoes acidentais de dados, mas NAO contra a
+// perda do banco/conta Cloudflare. Mitigacoes: (1) /api/backup/download exporta o
+// snapshot para uma copia externa; (2) o binding R2 `BACKUPS` ja esta previsto no
+// Env — basta criar o bucket e descomentar no wrangler para espelhar fora do banco.
+// --------------------------------------------------------------------------
+const BACKUP_RETENCAO_DIAS = 90;
+// Tabelas que NAO entram no dump: internas do SQLite/Cloudflare, o controle de
+// migracoes do wrangler e a PROPRIA tabela de backups (senao cada backup conteria
+// todos os anteriores -> crescimento exponencial).
+const BACKUP_IGNORAR = new Set(["backups", "d1_migrations", "_cf_KV", "_cf_METADATA"]);
+function backupTabelaIgnorada(nome: string): boolean {
+  return nome.startsWith("sqlite_") || nome.startsWith("_cf_") || BACKUP_IGNORAR.has(nome);
+}
+
+// gzip/gunzip de texto usando as streams nativas do Workers runtime.
+async function gzipTexto(txt: string): Promise<Uint8Array> {
+  const cs = new CompressionStream("gzip");
+  const w = cs.writable.getWriter();
+  w.write(new TextEncoder().encode(txt));
+  w.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+async function gunzipTexto(bytes: Uint8Array): Promise<string> {
+  const ds = new DecompressionStream("gzip");
+  const w = ds.writable.getWriter();
+  w.write(bytes);
+  w.close();
+  return await new Response(ds.readable).text();
+}
+// base64 <-> bytes (em blocos, p/ nao estourar o limite de args do String.fromCharCode).
+function bytesParaBase64(bytes: Uint8Array): string {
+  let bin = "";
+  const bloco = 0x8000;
+  for (let i = 0; i < bytes.length; i += bloco) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + bloco));
+  }
+  return btoa(bin);
+}
+function base64ParaBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+let backupsPronta = false;
+async function ensureBackups(db: D1Database): Promise<void> {
+  if (backupsPronta) return;
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS backups (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       criado_em TEXT, dia TEXT, origem TEXT, usuario TEXT,
+       status TEXT, erro TEXT,
+       tabelas INTEGER, linhas INTEGER, bytes INTEGER, bytes_raw INTEGER,
+       formato TEXT, conteudo TEXT)`
+  ).run();
+  backupsPronta = true;
+}
+
+// Monta o snapshot completo { meta, schema[], dados{} } como objeto JS.
+async function montarSnapshot(db: D1Database): Promise<{ snap: Row; tabelas: number; linhas: number }> {
+  const { results: tbls } = await db
+    .prepare("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name")
+    .all<Row>();
+  const schema: Row[] = [];
+  const dados: Record<string, Row[]> = {};
+  let totalLinhas = 0;
+  for (const t of tbls ?? []) {
+    const nome = String(t.name);
+    if (backupTabelaIgnorada(nome)) continue;
+    schema.push({ name: nome, sql: t.sql });
+    const { results } = await db.prepare(`SELECT * FROM "${nome}"`).all<Row>();
+    dados[nome] = results ?? [];
+    totalLinhas += (results ?? []).length;
+  }
+  const snap: Row = {
+    meta: { gerado_em: agora(), app: "prospeccao-starlink", versao_formato: 1,
+            total_tabelas: schema.length, total_linhas: totalLinhas },
+    schema, dados,
+  };
+  return { snap, tabelas: schema.length, linhas: totalLinhas };
+}
+
+// Executa um backup completo: dump -> gzip -> base64 -> grava + aplica retencao.
+// Nunca lanca: em falha, registra a linha com status='erro' e devolve {ok:false}.
+async function runBackup(env: Env, origem: string, usuario: string | null): Promise<Row> {
+  const db = env.DB;
+  await ensureBackups(db);
+  try {
+    const { snap, tabelas, linhas } = await montarSnapshot(db);
+    const json = JSON.stringify(snap);
+    const gz = await gzipTexto(json);
+    const b64 = bytesParaBase64(gz);
+    const res = await db.prepare(
+      `INSERT INTO backups (criado_em,dia,origem,usuario,status,erro,tabelas,linhas,bytes,bytes_raw,formato,conteudo)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(agora(), hoje(), origem, usuario, "ok", null,
+           tabelas, linhas, gz.length, json.length, "json.gz.base64", b64).run();
+    const id = Number((res as any)?.meta?.last_row_id) || null;
+    // Espelho externo opcional: se o bucket R2 estiver configurado, grava tambem la.
+    if (env.BACKUPS) {
+      try { await env.BACKUPS.put(`auto/${hoje()}/backup-${id}.json.gz`, gz); } catch { /* best-effort */ }
+    }
+    // Retencao: remove backups mais antigos que BACKUP_RETENCAO_DIAS.
+    const corte = agoraMais(-BACKUP_RETENCAO_DIAS * 24 * 60 * 60);
+    const del = await db.prepare("DELETE FROM backups WHERE criado_em < ?").bind(corte).run();
+    const apagados = Number((del as any)?.meta?.changes || 0);
+    const stats: Row = { ok: true, id, origem, criado_em: agora(), tabelas, linhas,
+      bytes: gz.length, bytes_raw: json.length, apagados_retencao: apagados };
+    await metaSet(db, "backup_last_run", agora());
+    await metaSet(db, "backup_last_stats", JSON.stringify(stats));
+    console.log(`Backup ${origem}: #${id} · ${tabelas} tabelas · ${linhas} linhas · ${gz.length}B · retencao -${apagados}`);
+    return stats;
+  } catch (e: any) {
+    const msg = e?.message ?? String(e);
+    try {
+      await db.prepare(
+        `INSERT INTO backups (criado_em,dia,origem,usuario,status,erro,tabelas,linhas,bytes,bytes_raw,formato,conteudo)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(agora(), hoje(), origem, usuario, "erro", msg, 0, 0, 0, 0, "", null).run();
+      await metaSet(db, "backup_last_run", agora());
+      await metaSet(db, "backup_last_stats", JSON.stringify({ ok: false, erro: msg, criado_em: agora() }));
+    } catch { /* nada a fazer */ }
+    console.log(`Backup ${origem} FALHOU: ${msg}`);
+    return { ok: false, erro: msg };
+  }
+}
+
+// Status do backup (admin): agendamento, retencao, ultimo run e totais.
+app.get("/api/backup/status", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const db = c.env.DB;
+  await ensureBackups(db);
+  const ultima = await metaGet(db, "backup_last_run");
+  let stats: any = null;
+  try { stats = JSON.parse((await metaGet(db, "backup_last_stats")) || "null"); } catch { stats = null; }
+  const tot = await db.prepare("SELECT COUNT(*) n, COALESCE(SUM(bytes),0) b FROM backups WHERE status='ok'").first<Row>();
+  return c.json({
+    agendado: "00:00 (America/Sao_Paulo), todos os dias",
+    retencao_dias: BACKUP_RETENCAO_DIAS,
+    destino: c.env.BACKUPS ? "D1 (tabela backups) + R2" : "D1 (tabela backups)",
+    ultima, stats,
+    total: Number(tot?.n || 0),
+    bytes_total: Number(tot?.b || 0),
+  });
+});
+
+// Lista os backups (so metadados, sem o conteudo) — admin.
+app.get("/api/backup/list", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  await ensureBackups(c.env.DB);
+  const { results } = await c.env.DB.prepare(
+    "SELECT id,criado_em,dia,origem,usuario,status,erro,tabelas,linhas,bytes,bytes_raw FROM backups ORDER BY id DESC LIMIT 400"
+  ).all<Row>();
+  return c.json(results ?? []);
+});
+
+// Dispara um backup imediato (botao "Fazer backup agora") — admin.
+app.post("/api/backup/run", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const stats = await runBackup(c.env, "manual", c.get("usuario")?.username ?? null);
+  await logSeguranca(c, "backup", { depois: stats.ok ? `#${stats.id} · ${stats.linhas} linhas` : `erro: ${stats.erro}` });
+  return c.json(stats, stats.ok ? 200 : 500);
+});
+
+// Baixa um backup como JSON descomprimido — admin. Permite guardar copia externa.
+app.get("/api/backup/download/:id", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const id = parseInt(c.req.param("id"), 10);
+  const row = await c.env.DB.prepare("SELECT dia,conteudo FROM backups WHERE id=? AND status='ok'").bind(id).first<Row>();
+  if (!row || !row.conteudo) return c.json({ erro: "Backup não encontrado." }, 404);
+  const json = await gunzipTexto(base64ParaBytes(String(row.conteudo)));
+  await logSeguranca(c, "backup_download", { depois: `#${id}` });
+  return new Response(json, { headers: {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Disposition": `attachment; filename="backup-starlink-${row.dia}-${id}.json"`,
+  }});
+});
+
+// Exclui um backup — admin.
+app.delete("/api/backup/:id", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const id = parseInt(c.req.param("id"), 10);
+  await c.env.DB.prepare("DELETE FROM backups WHERE id=?").bind(id).run();
+  await logSeguranca(c, "backup_excluir", { depois: `#${id}` });
+  return c.json({ ok: true });
+});
+
+// Restaura um backup — admin + confirmacao explicita. PERIGOSO: substitui os dados
+// atuais pelos do snapshot. Faz um backup de seguranca ANTES de sobrescrever.
+app.post("/api/backup/:id/restaurar", async (c) => {
+  if (!soAdmin(c)) return c.json({ erro: "Apenas o administrador." }, 403);
+  const body = await jsonBody(c);
+  if (!body || body.confirmar !== true) return c.json({ erro: "Confirmação obrigatória." }, 400);
+  const id = parseInt(c.req.param("id"), 10);
+  const row = await c.env.DB.prepare("SELECT conteudo FROM backups WHERE id=? AND status='ok'").bind(id).first<Row>();
+  if (!row || !row.conteudo) return c.json({ erro: "Backup não encontrado." }, 404);
+  // Rede de seguranca: snapshot do estado ATUAL antes de sobrescrever.
+  await runBackup(c.env, "pre-restauracao", c.get("usuario")?.username ?? null);
+  const snap = JSON.parse(await gunzipTexto(base64ParaBytes(String(row.conteudo))));
+  const dados: Record<string, Row[]> = snap?.dados || {};
+  const CHUNK = 100; // insercoes por batch (evita estourar limites do D1 em tabelas grandes)
+  let tabelas = 0, linhas = 0;
+  for (const nome of Object.keys(dados)) {
+    if (backupTabelaIgnorada(nome)) continue;
+    const rows = dados[nome] || [];
+    await c.env.DB.prepare(`DELETE FROM "${nome}"`).run();
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const stmts = rows.slice(i, i + CHUNK).map((r) => {
+        const cols = Object.keys(r);
+        const ph = cols.map(() => "?").join(",");
+        const colList = cols.map((x) => `"${x}"`).join(",");
+        return c.env.DB.prepare(`INSERT INTO "${nome}" (${colList}) VALUES (${ph})`).bind(...cols.map((x) => r[x]));
+      });
+      if (stmts.length) await c.env.DB.batch(stmts);
+    }
+    tabelas++; linhas += rows.length;
+  }
+  await logSeguranca(c, "backup_restaurar", { depois: `#${id} · ${tabelas} tabelas · ${linhas} linhas` });
+  return c.json({ ok: true, tabelas, linhas });
 });
 
 // Fallback: tudo que nao e /api/* vai para os assets estaticos (SPA), ja autenticado.
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-// Export com handler HTTP (Hono) + handler agendado (Cron Trigger diario).
+// Export com handler HTTP (Hono) + handler agendado (Cron Triggers diarios).
+// Dois gatilhos (ver wrangler.jsonc): "0 3 * * *" (00:00 BRT) = backup completo;
+// "0 9 * * *" (06:00 BRT) = varredura rotativa da prospeccao.
 export default {
   fetch: app.fetch,
-  scheduled: (_controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(runCron(env));
+  scheduled: (controller: ScheduledController, env: Env, ctx: ExecutionContext) => {
+    if (controller.cron === "0 3 * * *") {
+      ctx.waitUntil(runBackup(env, "auto", null));
+    } else {
+      ctx.waitUntil(runCron(env));
+    }
   },
 };

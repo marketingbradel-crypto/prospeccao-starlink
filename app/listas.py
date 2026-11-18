@@ -25,7 +25,7 @@ STATUS_VIVENSIS = ["Sem credenciamento", "Em credenciamento", "Credenciada"]
 CANAIS = ["Telecom", "Varejo (mercantil)"]
 
 # Responsaveis (equipe de prospeccao)
-RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita"]
+RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita", "Elionay", "Alessandra"]
 
 # Origem do lead / contato
 ORIGENS = ["Indicação", "Evento", "Inbound (site)", "Prospecção ativa", "Parceiro", "Outro"]
