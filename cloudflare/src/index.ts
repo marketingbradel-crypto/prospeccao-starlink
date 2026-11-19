@@ -539,7 +539,26 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
   const faixa = limpar(q.faixa);
   if (faixa) { where.push("faixa_potencial=?"); params.push(faixa); }
   const pend = limpar(q.pendencia);
-  if (pend) { where.push("pendencia_vsm=?"); params.push(pend); }
+  if (pend) {
+    // Pendência casa por PALAVRA-CHAVE, não igualdade exata — mesma regra do
+    // follow-up e das contagens do dashboard. Assim "Falta treinar" também traz
+    // "Falta treinar e assinar contrato" (que soma as duas pendências), e os três
+    // lugares passam a devolver o mesmo conjunto.
+    const p = pend.toLowerCase();
+    const temTreinar = p.includes("treinar");
+    const temContrato = p.includes("contrato") || p.includes("assinar");
+    if (temTreinar && temContrato) {
+      where.push("(lower(pendencia_vsm) LIKE '%treinar%' AND (lower(pendencia_vsm) LIKE '%contrato%' OR lower(pendencia_vsm) LIKE '%assinar%'))");
+    } else if (temTreinar) {
+      where.push("lower(pendencia_vsm) LIKE '%treinar%'");
+    } else if (temContrato) {
+      where.push("(lower(pendencia_vsm) LIKE '%contrato%' OR lower(pendencia_vsm) LIKE '%assinar%')");
+    } else if (p.includes("sem pend")) {
+      where.push("lower(pendencia_vsm) LIKE 'sem pend%'");
+    } else {
+      where.push("pendencia_vsm=?"); params.push(pend);
+    }
+  }
   const pendCad = limpar(q.pendencia_cad);
   if (pendCad) { where.push("pendencia_cadastro=?"); params.push(pendCad); }
   const vendeu = String(q.vendeu ?? "").toLowerCase();
@@ -1792,8 +1811,23 @@ app.get("/api/mapa", async (c) => {
 });
 
 // ---- dashboard ----
+// Primeiro município de um campo que pode listar vários (separados por vírgula,
+// "/", ";" ou " e "). Evita que "Imperatriz, Açailândia" conte como 1 município
+// distinto na contagem de "Municípios alcançados". (Espelha cidadeCurta() do front
+// para separadores explícitos; listas coladas só por espaço não são desmembradas.)
+function primeiraCidade(s: any): string {
+  const raw = String(s ?? "").trim();
+  if (!raw) return "";
+  const partes = raw.split(/\s*[,;/]\s*|\s+e\s+/i).map((x) => x.trim()).filter(Boolean);
+  return partes[0] || raw;
+}
+
 app.get("/api/dashboard", async (c) => {
-  const { results } = await c.env.DB.prepare("SELECT * FROM empresas").all<Row>();
+  // Respeita os mesmos filtros da listagem/mapa (UF, status, origem, etc.) para que
+  // os KPIs do topo batam com a lista e a apuração na tela do Mapa. Sem filtros,
+  // retorna a visão geral da base inteira (usada pela aba Painel).
+  const { clause, params } = construirWhere(c.req.query());
+  const { results } = await c.env.DB.prepare(`SELECT * FROM empresas${clause}`).bind(...params).all<Row>();
   const rows = results ?? [];
   const total = rows.length;
   const porStatus: Record<string, number> = {};
@@ -1805,6 +1839,10 @@ app.get("/api/dashboard", async (c) => {
   // totais, mas NÃO no percentual do universo VSM — senão a cobertura passaria de 100%.
   const porUfVsm: Record<string, number> = {};
   for (const u of L.UFS) porUfVsm[u] = 0;
+  // Captação por FORMULÁRIO de credenciamento (origem_contato = "Formulário"),
+  // separada das demais origens que também não são VSM (prospecção, indicação…).
+  const porUfForm: Record<string, number> = {};
+  for (const u of L.UFS) porUfForm[u] = 0;
   const porSegmento: Record<string, number> = {};
   const municipios = new Set<string>();
   const microrregioes = new Set<string>();
@@ -1830,9 +1868,11 @@ app.get("/api/dashboard", async (c) => {
     if (uf) porUf[uf] = (porUf[uf] ?? 0) + 1;
     const ehVsm = String(r.origem_contato || "").trim().toUpperCase().startsWith("VSM");
     if (uf && ehVsm) porUfVsm[uf] = (porUfVsm[uf] ?? 0) + 1;
+    const ehForm = String(r.origem_contato || "").trim().toLowerCase().startsWith("formul");
+    if (uf && ehForm) porUfForm[uf] = (porUfForm[uf] ?? 0) + 1;
     const seg = r.segmento || "—";
     porSegmento[seg] = (porSegmento[seg] ?? 0) + 1;
-    if (r.cidade) municipios.add(`${uf}|${String(r.cidade).trim().toLowerCase()}`);
+    if (r.cidade) municipios.add(`${uf}|${primeiraCidade(r.cidade).toLowerCase()}`);
     if (r.microrregiao) microrregioes.add(`${uf}|${r.microrregiao}`);
     const cor = L.corDoStatus(st);
     if (st === "Pronto para venda") credenciados += 1;
@@ -1910,8 +1950,9 @@ app.get("/api/dashboard", async (c) => {
     const mapeadas = porUfVsm[u] ?? 0;
     const total_uf = porUf[u] ?? 0;
     const outras = Math.max(0, total_uf - mapeadas);
+    const formulario = porUfForm[u] ?? 0;
     const pct = universo ? Math.round((1000.0 * mapeadas) / universo) / 10 : 0.0;
-    return { uf: u, mapeadas, universo, pct, total_uf, outras };
+    return { uf: u, mapeadas, universo, pct, total_uf, outras, formulario };
   });
   const universoVsmTotal = L.UFS.reduce((s, u) => s + (L.UNIVERSO_VSM[u] ?? 0), 0);
   const mapeadasVsmTotal = L.UFS.reduce((s, u) => s + (porUfVsm[u] ?? 0), 0);

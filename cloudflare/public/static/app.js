@@ -683,14 +683,19 @@ const App = (() => {
     const tasks = [
       fetch("/api/empresas?" + q).then(r => r.json()),
       fetch("/api/mapa?" + q).then(r => r.json()),
-      fetch("/api/dashboard").then(r => r.json()),
+      // Dashboard com os MESMOS filtros: assim os KPIs do topo batem com a lista e a
+      // apuração na tela do Mapa. A aba Painel busca a versão global (renderPainel).
+      fetch("/api/dashboard?" + q).then(r => r.json()),
     ];
     // Carrega (uma vez) a geometria do estado filtrado para o mapa de detalhe.
     if (uf && !GEOUF[uf]) tasks.push(fetch("/api/geo/" + encodeURIComponent(uf)).then(r => r.json()).then(g => { GEOUF[uf] = g; }));
     const [emp, mp, dsh] = await Promise.all(tasks);
     EMPRESAS = emp; MAP = mp; DASH = dsh;
-    renderKPIs(); renderMapa(); renderLista(); renderApuracao();
+    renderMapa(); renderLista(); renderApuracao();
+    // A barra de KPIs reflete o escopo da aba aberta: filtrada no Mapa, global nas demais.
     if (!$("view-painel").classList.contains("hidden")) renderPainel();
+    else if ($("view-mapa").classList.contains("hidden")) renderKPIsGlobal();
+    else renderKPIs();
     // Mantém o Follow-up e seu badge em sincronia após qualquer salvamento,
     // sem bloquear a atualização do mapa/lista (fire-and-forget).
     sincronizarFollowUp();
@@ -708,12 +713,21 @@ const App = (() => {
   }
 
   // ==================== KPIs ====================
-  function renderKPIs() {
-    const d = DASH;
+  // Busca o dashboard SEM filtros e pinta a barra com a visão geral da base.
+  // Usado nas abas que não são o Mapa (Painel, Follow-up, Prospecção, Gerencial),
+  // onde não há filtros à mostra — ali a barra representa o todo, não a seleção.
+  async function renderKPIsGlobal() {
+    try { renderKPIs(await (await fetch("/api/dashboard")).json()); }
+    catch { renderKPIs(); }
+  }
+
+  // Pinta a barra de KPIs a partir de `d` (padrão: DASH, que no Mapa já vem filtrado).
+  function renderKPIs(d = DASH) {
+    if (!d) return;
     const cards = [
-      { v: d.total, l: "Empresas mapeadas", c: "var(--accent)", tip: "Total de empresas cadastradas na base (visão geral, sem considerar os filtros do mapa)." },
+      { v: d.total, l: "Empresas mapeadas", c: "var(--accent)", tip: "Total de empresas na visão atual: no Mapa reflete os filtros aplicados; nas demais abas mostra a base completa." },
       { v: d.potenciais, l: "Potenciais", c: hexCor("azul"), tip: "Leads no início do funil (aguardando contato ou em atendimento)." },
-      { v: d.em_negociacao, l: "Em andamento", c: hexCor("amarelo"), tip: "Empresas em cadastro no VSM ou em treinamento." },
+      { v: (d.em_negociacao || 0) + (d.aguardando || 0), l: "Em andamento", c: hexCor("amarelo"), tip: "Empresas ativas entre o lead e a venda: em cadastro/treinamento no VSM e também as já parceiras ou com contrato assinado." },
       { v: d.credenciados, l: "Pronto p/ venda", c: hexCor("verde"), tip: "Revendas prontas para vender Starlink (estágio de conversão)." },
       { v: d.municipios, l: "Municípios alcançados", c: "var(--muted)", tip: "Quantidade de municípios distintos com ao menos uma empresa mapeada." },
       { v: d.taxa_conversao + "%", l: "Conversão → pronto p/ venda", c: hexCor("verde"), tip: "Percentual da base que chegou a 'Pronto para venda' (÷ total de empresas)." },
@@ -1099,6 +1113,9 @@ const App = (() => {
   // Empresa de origem VSM (import do portal Vivensis). Só essas contam no percentual
   // de cobertura do universo VSM — as demais origens aparecem como contagem ao lado.
   const isVsm = (e) => String(e.origem_contato || "").trim().toUpperCase().startsWith("VSM");
+  // Empresa captada pelo FORMULÁRIO de credenciamento (origem = "Formulário"),
+  // distinta de outras origens fora do VSM (prospecção, indicação, evento…).
+  const isForm = (e) => String(e.origem_contato || "").trim().toLowerCase().startsWith("formul");
 
   function renderApuracao() {
     const box = $("apuracao");
@@ -1117,7 +1134,8 @@ const App = (() => {
     // (porUFVsm/totalVsm) usado apenas na métrica "Empresas" para a cobertura do universo.
     const porUF = {}; ufs.forEach(u => porUF[u] = 0);
     const porUFVsm = {}; ufs.forEach(u => porUFVsm[u] = 0);
-    let total = 0, totalVsm = 0;
+    const porUFForm = {}; ufs.forEach(u => porUFForm[u] = 0); // só origem = Formulário
+    let total = 0, totalVsm = 0, totalForm = 0;
     for (const e of EMPRESAS) {
       const v = apVale(e, metric.key);
       if (!v) continue;
@@ -1128,23 +1146,27 @@ const App = (() => {
         totalVsm += v;
         if (u in porUFVsm) porUFVsm[u] += v;
       }
+      if (isForm(e)) {
+        totalForm += v;
+        if (u in porUFForm) porUFForm[u] += v;
+      }
     }
     const base = EMPRESAS.length; // total de empresas no filtro atual
     const maxUF = Math.max(1, ...ufs.map(u => porUF[u]));
 
     // --- Indicador geral (hero) ---
-    // Na métrica "Empresas" o número grande e o % refletem SÓ origem VSM (para casar
-    // com o universo); as demais origens aparecem como contagem fora do percentual.
+    // Na métrica "Empresas" o número grande é o TOTAL de empresas prospectadas (todas
+    // as origens); o subtítulo detalha a composição (VSM + outras) e a cobertura do
+    // universo VSM, que por definição considera só as revendas de origem VSM.
     let sub = "", metaBar = "", bigNum = total;
     if (metric.key === "empresas") {
-      bigNum = totalVsm;
+      bigNum = total;
       const outras = total - totalVsm;
-      const outrasTxt = outras > 0
-        ? `<span class="outras">+ ${outras} de outras origens (Forms/prospecção)</span>` : "";
+      const compos = `<span>${totalVsm} VSM${outras > 0 ? ` + ${outras} de outras origens` : ""}</span>`;
       const pctMeta = universoTotal ? (totalVsm / universoTotal) * 100 : 0;
       sub = universoTotal
-        ? `<span><b>${apPct(pctMeta)}%</b> do universo VSM</span><span>· ${totalVsm} de ${universoTotal} revendas</span>${outrasTxt}`
-        : `<span>empresas VSM na seleção atual</span>${outrasTxt}`;
+        ? `${compos}<span>· <b>${apPct(pctMeta)}%</b> do universo VSM (${totalVsm}/${universoTotal})</span>`
+        : compos;
       metaBar = universoTotal
         ? `<div class="meta-track"><div class="meta-fill" style="width:${Math.min(100, pctMeta)}%"></div></div>` : "";
     } else {
@@ -1159,14 +1181,15 @@ const App = (() => {
       const nome = (B.uf_nomes && B.uf_nomes[u]) || u;
       let pct, barW, foot, topN = val;
       if (metric.key === "empresas") {
-        // % = atingimento da meta estadual (cobertura do universo VSM) — só origem VSM.
+        // Número de destaque = total de empresas no estado (todas as origens).
+        // % e barra = atingimento da meta estadual (cobertura do universo VSM, só VSM).
         const uni = universo[u] || 0;
         const valVsm = porUFVsm[u];
         const outras = val - valVsm;
-        topN = valVsm;
+        topN = val;
         pct = uni ? (valVsm / uni) * 100 : 0;
         barW = Math.min(100, pct);
-        foot = `<span class="sm">${valVsm} / ${uni || "—"}${outras > 0 ? ` · +${outras} outras` : ""}</span>`;
+        foot = `<span class="sm">${valVsm} VSM / ${uni || "—"}${outras > 0 ? ` · +${outras} outras` : ""}</span>`;
       } else {
         // % = participação no total da métrica; barra relativa ao estado líder
         pct = total ? (val / total) * 100 : 0;
@@ -1182,25 +1205,24 @@ const App = (() => {
       </button>`;
     }).join("");
 
-    // --- Bloco "Formulários" (empresas de outras origens, fora do VSM) ---
-    // Espelha o cartão principal, mas conta SÓ as empresas que não vieram do VSM
-    // (origem Forms/prospecção). Só faz sentido na métrica "Empresas".
+    // --- Bloco "Formulários" (empresas captadas pelo formulário de credenciamento) ---
+    // Conta SÓ as empresas com origem = "Formulário" (não todas as não-VSM). Espelha
+    // o cartão principal. Só faz sentido na métrica "Empresas".
     let formsSection = "";
     if (metric.key === "empresas") {
       const formsHex = hexCor("laranja"); // cor distinta do bloco VSM (azul)
-      const outrasTotal = total - totalVsm;
-      const maxOutras = Math.max(1, ...ufs.map(u => porUF[u] - porUFVsm[u]));
+      const maxForm = Math.max(1, ...ufs.map(u => porUFForm[u]));
       const formsCards = ufs
-        .map(u => ({ u, n: porUF[u] - porUFVsm[u] }))
+        .map(u => ({ u, n: porUFForm[u] }))
         .filter(x => x.n > 0)
         .sort((a, b) => b.n - a.n)
         .map(({ u, n }) => {
           const nome = (B.uf_nomes && B.uf_nomes[u]) || u;
-          const pct = outrasTotal ? (n / outrasTotal) * 100 : 0;
-          const barW = (n / maxOutras) * 100;
+          const pct = totalForm ? (n / totalForm) * 100 : 0;
+          const barW = (n / maxForm) * 100;
           const on = ufSel === u ? " on" : "";
           return `<button type="button" class="apu-state${on}" onclick="App.apSelUF('${u}')"
-              title="${esc(nome)} — empresas de formulários/prospecção neste estado; clique para filtrar o mapa e a lista">
+              title="${esc(nome)} — empresas captadas por formulário neste estado; clique para filtrar o mapa e a lista">
             <div class="top"><span class="uf">${esc(u)}</span><span class="n">${n}</span></div>
             <div class="track"><div class="fill" style="width:${barW}%;background:${formsHex}"></div></div>
             <div class="foot"><span class="sm">${apPct(pct)}% do total</span><span class="pct" style="color:${formsHex}">${apPct(pct)}%</span></div>
@@ -1209,12 +1231,12 @@ const App = (() => {
       formsSection = `
         <div class="apu-hero" style="margin-top:14px;border-left:3px solid ${formsHex}">
           <div class="tt">TOTAL DE EMPRESAS DE FORMULÁRIOS</div>
-          <div class="big" style="color:${formsHex}">${outrasTotal}</div>
-          <div class="sub"><span>captadas fora do VSM (Forms/prospecção)</span></div>
+          <div class="big" style="color:${formsHex}">${totalForm}</div>
+          <div class="sub"><span>captadas pelo formulário de credenciamento</span></div>
         </div>
         <div>
-          <div class="apu-sec-tt">Formulários por estado${infoIco("Empresas que não vieram do portal VSM (origem Forms/prospecção), por estado. Clique num cartão para filtrar o mapa e a lista.", "Formulários por estado")}</div>
-          ${outrasTotal ? `<div class="apu-states">${formsCards}</div>` : `<div class="apu-empty">Nenhuma empresa de formulários nos filtros atuais.</div>`}
+          <div class="apu-sec-tt">Formulários por estado${infoIco("Empresas captadas pelo formulário de credenciamento (origem = Formulário), por estado. Clique num cartão para filtrar o mapa e a lista.", "Formulários por estado")}</div>
+          ${totalForm ? `<div class="apu-states">${formsCards}</div>` : `<div class="apu-empty">Nenhuma empresa de formulários nos filtros atuais.</div>`}
         </div>`;
     }
 
@@ -1293,7 +1315,7 @@ const App = (() => {
   // Barra = volume relativo ao maior estado; indicadores = contagem | % do total.
   function chartOrigemForms(cob) {
     if (!cob || !cob.length) return '<div class="empty">Sem empresas de formulários ainda.</div>';
-    const linhas = cob.map(c => ({ uf: c.uf, n: c.outras || 0 }));
+    const linhas = cob.map(c => ({ uf: c.uf, n: c.formulario || 0 }));
     const total = linhas.reduce((s, l) => s + l.n, 0);
     if (!total) return '<div class="empty">Sem empresas de formulários ainda.</div>';
     const max = Math.max(1, ...linhas.map(l => l.n));
@@ -1343,10 +1365,17 @@ const App = (() => {
     return `<div class="stat"><div class="v">${v}</div><div class="l">${esc(label)}</div><div class="l" style="opacity:.7">${n}</div></div>`;
   }
 
-  function renderPainel() {
-    const d = DASH;
+  async function renderPainel() {
+    // O Painel é sempre a VISÃO GERAL da base — busca o dashboard sem filtros
+    // (o DASH em memória pode estar filtrado pela tela do Mapa) e repinta a barra
+    // de KPIs com esse mesmo escopo global, mantendo tudo coerente nesta aba.
+    let d = DASH;
+    try { d = await (await fetch("/api/dashboard")).json(); } catch { d = DASH; }
+    if (!d) return;
+    renderKPIs(d);
+    const emAndamento = (d.em_negociacao || 0) + (d.aguardando || 0);
     const stats = [
-      ["Total mapeadas", d.total], ["Potenciais", d.potenciais], ["Em andamento", d.em_negociacao],
+      ["Total mapeadas", d.total], ["Potenciais", d.potenciais], ["Em andamento", emAndamento],
       ["Parceiros/contrato", d.aguardando], ["Pronto p/ venda", d.credenciados], ["Perdidos/sem retorno", d.perdidos],
       ["Municípios", d.municipios], ["Microrregiões", d.microrregioes],
       ["Já venderam", d.ja_venderam || 0],
@@ -1370,9 +1399,9 @@ const App = (() => {
         ${chartCobertura(d.cobertura_vsm)}
         <div class="l" style="opacity:.7;margin-top:8px">${d.mapeadas_vsm_total || 0} de ${d.universo_vsm_total || 0} revendas do VSM mapeadas.</div>
       </div></div>
-      <div class="card wide"><div class="hd"><h2>Captação por formulário por estado${infoIco("Empresas captadas pela equipe por formulário (origem diferente de VSM), por estado. Barra = volume relativo ao maior estado; % = participação no total captado por formulário.", "Captação por formulário")}</h2></div><div class="bd">
+      <div class="card wide"><div class="hd"><h2>Captação por formulário por estado${infoIco("Empresas captadas pelo formulário de credenciamento (origem = Formulário), por estado. Barra = volume relativo ao maior estado; % = participação no total captado por formulário.", "Captação por formulário")}</h2></div><div class="bd">
         ${chartOrigemForms(d.cobertura_vsm)}
-        <div class="l" style="opacity:.7;margin-top:8px">${(d.cobertura_vsm || []).reduce((s, c) => s + (c.outras || 0), 0)} empresas captadas por formulário (origem fora do VSM).</div>
+        <div class="l" style="opacity:.7;margin-top:8px">${(d.cobertura_vsm || []).reduce((s, c) => s + (c.formulario || 0), 0)} empresas captadas pelo formulário de credenciamento (origem = Formulário).</div>
       </div></div>
       <div class="card wide"><div class="hd"><h2>Por potencial de vendas/mês${infoIco("Quantas empresas há em cada faixa de potencial de venda. 'Sem classificação' = ainda sem faixa definida.", "Por potencial")}</h2></div><div class="bd">${faixaData.some(x => x[1] > 0) ? chart(faixaData, l => (B.faixa_hex && B.faixa_hex[l]) || "var(--muted)", { foraDaEscala: ["Sem classificação"] }) : '<div class="empty">Nenhuma empresa classificada por potencial ainda.</div>'}</div></div>
       <div class="card wide"><div class="hd"><h2>Por segmento</h2></div><div class="bd">${segData.length ? chart(segData, () => "var(--brand2)") : '<div class="empty">Sem segmentos informados.</div>'}</div></div>
@@ -1399,7 +1428,10 @@ const App = (() => {
     const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec", gerencial: "view-gerencial" };
     Object.entries(views).forEach(([k, id]) => { const el = $(id); if (el) el.classList.toggle("hidden", k !== v); });
     ["mapa", "painel", "followup", "prospec", "gerencial"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
-    if (v === "painel") renderPainel();
+    // Barra de KPIs: filtrada no Mapa (acompanha a lista), global nas demais abas.
+    if (v === "painel") renderPainel();        // renderPainel já repinta a barra (global)
+    else if (v === "mapa") renderKPIs();       // DASH já está filtrado
+    else renderKPIsGlobal();
     if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
     if (v === "gerencial") carregarGerencial();
