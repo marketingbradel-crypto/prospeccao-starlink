@@ -1088,6 +1088,12 @@ app.get("/api/empresas/:eid{[0-9]+}", async (c) => {
   const eid = Number(c.req.param("eid"));
   const row = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(eid).first<Row>();
   if (!row) return c.notFound();
+  // Consultor de carteira nao abre ficha (nem historico de contatos) de empresa
+  // de outra carteira. Gerencial/admin/geral passam direto.
+  const carteira = await carteiraDoFiltro(c, c.get("usuario"));
+  if (carteira && String(row.responsavel || "") !== carteira) {
+    return c.json({ erro: "Esta empresa pertence a outra carteira." }, 403);
+  }
   const e = empresaDict(row)!;
   const filiais = await c.env.DB.prepare("SELECT * FROM filiais WHERE empresa_id=? ORDER BY id").bind(eid).all<Row>();
   const contatos = await c.env.DB
@@ -1384,6 +1390,23 @@ async function temPermGerencial(c: any, u?: Usuario): Promise<boolean> {
   const r = await c.env.DB.prepare("SELECT perm_gerencial FROM usuarios WHERE username=?")
     .bind(u.username).first();
   return !!(r && Number(r.perm_gerencial));
+}
+
+// Sentinela que nunca casa com um responsavel real: usado para travar logins
+// desconhecidos (sem carteira e fora da lista "geral") na defensiva — veem nada,
+// nunca a base inteira. Basta cadastrar o login em listas.ts para liberar.
+const SEM_CARTEIRA = " __sem_carteira__";
+
+// Carteira a que o usuario fica restrito (Follow-up e abertura de ficha), ou ""
+// quando ele pode ver a base inteira. Veem tudo: admin, quem tem acesso gerencial
+// e os logins "geral" (LOGINS_GERAL). Os consultores de carteira (leandro, ronaldo,
+// mateus, luiscarlos) ficam presos a propria. Qualquer outro login cai no sentinela.
+async function carteiraDoFiltro(c: any, u?: Usuario): Promise<string> {
+  u = u || c.get("usuario");
+  if (!u) return SEM_CARTEIRA;
+  if (u.admin || L.loginVeTudo(u.username)) return "";
+  if (await temPermGerencial(c, u)) return "";
+  return L.responsavelDoLogin(u.username) || SEM_CARTEIRA;
 }
 
 app.get("/api/usuarios", async (c) => {
@@ -1996,14 +2019,18 @@ function diasSinal(aISO: string, bISO: string): number {
 
 app.get("/api/follow-up", async (c) => {
   const hojeStr = hoje();
-  const { results } = await c.env.DB.prepare(
+  // Consultor de carteira so ve o Follow-up da propria carteira; gerencial/admin
+  // (e logins "geral") veem tudo. Trava no backend: nao basta filtrar na tela.
+  const carteira = await carteiraDoFiltro(c, c.get("usuario"));
+  const sql =
     `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
             telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
             data_ultimo_contato, faixa_potencial, origem_contato,
             pendencia_vsm, pendencia_cadastro, pendencia_cadastro_obs,
             ja_vendeu, vendas_vsm, instalacoes_vsm
-       FROM empresas`
-  ).all<Row>();
+       FROM empresas` + (carteira ? ` WHERE responsavel=?` : ``);
+  const stmt = c.env.DB.prepare(sql);
+  const { results } = await (carteira ? stmt.bind(carteira) : stmt).all<Row>();
 
   const vencidas: Row[] = [], hojeList: Row[] = [], proximas: Row[] = [], parados: Row[] = [];
   for (const r of results ?? []) {
@@ -2011,7 +2038,7 @@ app.get("/api/follow-up", async (c) => {
     const nome = r.nome_fantasia || r.razao_social || "(sem nome)";
     const pad = String(r.proxima_acao_data || "").slice(0, 10);
     const base: Row = {
-      id: r.id, nome, cidade: r.cidade, uf: r.uf, status: r.status,
+      id: r.id, nome, razao_social: r.razao_social || "", cidade: r.cidade, uf: r.uf, status: r.status,
       responsavel: r.responsavel, prioridade: r.prioridade,
       telefone: r.telefone_comercial || "", whatsapp: r.whatsapp || "",
       proxima_acao: r.proxima_acao || "", proxima_acao_data: pad,

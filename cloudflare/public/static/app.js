@@ -1792,13 +1792,16 @@ const App = (() => {
               return `<option value="${esc(v)}"${v === val ? " selected" : ""}>${esc(t)}</option>`; }).join("")}
           </select>
         </label>`;
+    // Consultor de carteira (tem responsável e não é gerencial/admin) fica preso à
+    // própria carteira — o backend já só envia a dele, então o seletor some.
+    const fuTravado = !!(ME && ME.responsavel && !ME.perm_gerencial && !ME.admin);
     const filtro = `
       <div class="fu-toolbar">
         <label class="fu-filtro fu-busca-wrap">Buscar
-          <input id="fu-busca" type="search" class="fu-busca" placeholder="Nome da empresa…"
+          <input id="fu-busca" type="search" class="fu-busca" placeholder="Empresa, parceiro ou cidade…"
                  value="${esc(fuBusca)}" oninput="App.fuBuscar(this.value)" autocomplete="off">
         </label>
-        ${sel("fu-resp", "Responsável", fuResp || "", resps)}
+        ${fuTravado ? "" : sel("fu-resp", "Responsável", fuResp || "", resps)}
         ${sel("fu-uf", "Estado", fuUF, ufs)}
         ${sel("fu-status", "Status", fuStatus, statuses)}
         ${sel("fu-origem", "Origem", fuOrigem, origens)}
@@ -1808,7 +1811,11 @@ const App = (() => {
       </div>`;
     const buscaN = norm(fuBusca);
     const passa = (x) => {
-      if (buscaN && !norm(x.nome).includes(buscaN)) return false;
+      if (buscaN) {
+        // Busca casa com nome da empresa, razão social (parceiro) ou cidade.
+        const alvo = norm([x.nome, x.razao_social, x.cidade].filter(Boolean).join(" "));
+        if (!alvo.includes(buscaN)) return false;
+      }
       if (fuResp && (x.responsavel || "") !== fuResp) return false;
       if (fuUF && (x.uf || "") !== fuUF) return false;
       if (fuStatus && (x.status || "") !== fuStatus) return false;
@@ -2542,8 +2549,11 @@ const App = (() => {
       const carimbo = c.criado_por
         ? "registrado por " + esc(c.criado_por) + (c.criado_em ? " · " + esc(fmtData(c.criado_em)) : "")
         : (c.criado_em ? "registrado em " + esc(fmtData(c.criado_em)) : "");
+      // Link "excluir" só para quem pode escrever (admin/operador). Remove o
+      // registro do histórico (ex.: contato lançado por engano/teste). Audita no backend.
+      const btnDel = (ME && ME.papel !== "consulta") ? `<button class="lnk danger" style="float:right;margin-left:8px" onclick="App.delContato(${c.id})">excluir</button>` : "";
       return `
-      <div class="tl"><div class="m">${esc(fmtData(c.data) || c.data || "")} · ${esc(c.tipo || "")}${c.responsavel ? " · " + esc(c.responsavel) : ""}</div>
+      <div class="tl"><div class="m">${btnDel}${esc(fmtData(c.data) || c.data || "")} · ${esc(c.tipo || "")}${c.responsavel ? " · " + esc(c.responsavel) : ""}</div>
       <div class="x">${esc(c.resumo || "")}</div>
       ${c.proxima_acao ? `<div class="m">→ ${esc(c.proxima_acao)} ${c.proxima_acao_data ? "(" + esc(c.proxima_acao_data) + ")" : ""}</div>` : ""}
       ${carimbo ? `<div class="m" style="opacity:.72;font-size:11.5px">${carimbo}</div>` : ""}</div>`;
@@ -2717,7 +2727,11 @@ const App = (() => {
   }
 
   async function abrirFicha(id) {
-    cur = await (await fetch("/api/empresas/" + id)).json();
+    const r = await fetch("/api/empresas/" + id);
+    const d = await r.json().catch(() => ({}));
+    // Consultor tentando abrir ficha de outra carteira: o backend responde 403.
+    if (!r.ok) { toast(d.erro || "Não foi possível abrir esta empresa."); return; }
+    cur = d;
     editMode = false;
     renderDrawer();
   }
@@ -2819,7 +2833,11 @@ const App = (() => {
     }
   }
   async function delContato(id) {
-    await fetch("/api/contatos/" + id, { method: "DELETE" });
+    if (!confirm("Excluir este registro do histórico de contatos? Esta ação não pode ser desfeita.")) return;
+    const r = await fetch("/api/contatos/" + id, { method: "DELETE" });
+    if (!r.ok) { toast("Não foi possível excluir o registro."); return; }
+    toast("Registro removido do histórico.");
+    await recarregar();
     await abrirFicha(cur.id);
   }
 

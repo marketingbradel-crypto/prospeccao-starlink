@@ -94,9 +94,9 @@ export const CANAIS = ["Telecom", "Varejo (mercantil)"];
 export const RESPONSAVEIS = ["Leandro", "Ronaldo", "Luis Carlos", "Mateus", "Sunamita", "Elionay", "Alessandra"];
 
 // Mapa login (username) -> responsavel (carteira). Define quem, ao entrar, ja abre
-// o Follow-up filtrado pela propria carteira. Quem NAO esta aqui ve tudo (geral):
-// bradel (admin), jossy, romulo, sunamita, elionay, alessandra.
-// Sunamita cobre varejo em todos os estados, por isso entra como geral (ve tudo).
+// o Follow-up filtrado pela propria carteira E fica restrito a ela (backend trava).
+// So estes 4 consultores sao restritos; todo o resto ve a base inteira (ver
+// LOGINS_GERAL abaixo). Sunamita cobre varejo em todos os estados -> geral.
 const RESP_POR_LOGIN: Record<string, string> = {
   leandro: "Leandro",
   ronaldo: "Ronaldo",
@@ -104,9 +104,22 @@ const RESP_POR_LOGIN: Record<string, string> = {
   luiscarlos: "Luis Carlos",
 };
 
+// Logins que enxergam a carteira de todo mundo (base inteira). Lista explicita
+// para nao depender de "ausencia" no mapa acima: bradel (admin), jossy, romulo,
+// sunamita, elionay, alessandra, kaua. Admin e quem tem acesso gerencial tambem
+// veem tudo (checado no backend), independente desta lista.
+const LOGINS_GERAL = new Set<string>([
+  "bradel", "jossy", "romulo", "sunamita", "elionay", "alessandra", "kaua",
+]);
+
 // Responsavel (carteira) de um login, ou "" quando o login ve tudo (geral).
 export function responsavelDoLogin(username?: string | null): string {
   return RESP_POR_LOGIN[(username || "").trim().toLowerCase()] || "";
+}
+
+// True quando o login enxerga a base inteira (consta em LOGINS_GERAL).
+export function loginVeTudo(username?: string | null): boolean {
+  return LOGINS_GERAL.has((username || "").trim().toLowerCase());
 }
 
 // --------------------------------------------------------------------------
