@@ -156,8 +156,10 @@ export function responsavelPara(uf?: string | null, microrregiao?: string | null
   return RESP_POR_UF[u] || "";
 }
 
-// Origem do lead / contato
-export const ORIGENS = ["Indicação", "Evento", "Inbound (site)", "Prospecção ativa", "Parceiro", "Outro"];
+// Origem do lead / contato. "Formulário" e "VSM" marcam a fonte de aquisição
+// (credenciamento x portal Vivensis); as demais, o canal de entrada do lead.
+// Campo travado para o time comercial (só admin edita) — ver index.ts (PUT).
+export const ORIGENS = ["Indicação", "Evento", "Inbound (site)", "Prospecção ativa", "Formulário", "VSM"];
 
 // Prioridade comercial
 export const PRIORIDADES = ["Alta", "Média", "Baixa"];

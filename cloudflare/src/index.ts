@@ -305,6 +305,23 @@ function normIdVsm(s: any): string {
   return m ? m[0] : "";
 }
 
+// Normaliza qualquer texto livre de origem para o vocabulario canonico do app
+// (L.ORIGENS). Usado para derivar a origem no import e para limpar valores
+// legados ("Formulário de credenciamento" -> "Formulário", "VSM Vivensis" -> "VSM",
+// "Redes sociais" -> "Inbound (site)", "Contato da equipe Bradel" -> "Prospecção
+// ativa"...). Devolve "" quando nao reconhece (nao força nada).
+function normalizarOrigem(s: any): string {
+  const n = L.norm(String(s ?? ""));
+  if (!n) return "";
+  if (n.includes("formul")) return "Formulário";
+  if (n.includes("vsm") || n.includes("vivensis")) return "VSM";
+  if (n.includes("indica")) return "Indicação";
+  if (n.includes("evento") || n.includes("feira")) return "Evento";
+  if (n.includes("inbound") || n.includes("site") || n.includes("rede") || n.includes("instagram")) return "Inbound (site)";
+  if (n.includes("prospec") || n.includes("equipe") || n.includes("bradel") || n.includes("ativa")) return "Prospecção ativa";
+  return "";
+}
+
 function chaveNomeCidade(razao: any, uf: any, cidade: any): string {
   const n = L.norm(String(razao ?? ""));
   if (!n) return "";
@@ -1053,6 +1070,12 @@ app.post("/api/empresas", async (c) => {
     return c.json({ erro: `Telefone inválido em: ${telRuins.join(", ")}. Use DDD + número (celular com 9 dígitos).` }, 400);
   }
   const e = montarEmpresa(data, true);
+  // Origem travada p/ o comercial: no cadastro manual o campo vem desabilitado
+  // (sem valor). Para o lead nao ficar sem origem, assume "Prospecção ativa" —
+  // o caso tipico de quem cadastra na mao. Admin pode escolher outra na ficha.
+  if (!ehAdminPapel(c.get("usuario")) && !limpar(e.origem_contato)) {
+    e.origem_contato = "Prospecção ativa";
+  }
   const dup = await empresaDupCnpj(c.env.DB, e.cnpj_norm);
   if (dup) return c.json({ erro: "Já existe uma empresa com este CNPJ.", id: dup }, 409);
   if (!e.codigo) e.codigo = await proximoCodigo(c.env.DB);
@@ -1077,6 +1100,13 @@ app.put("/api/empresas/:eid{[0-9]+}", async (c) => {
   // ID VSM e imutavel depois de definido: se a empresa ja tem um, ignora
   // qualquer valor que venha do formulario (a UI tambem bloqueia o campo).
   if (String(atual.id_vsm ?? "").trim() !== "") e.id_vsm = atual.id_vsm;
+
+  // Origem do contato: TRAVADA para o time comercial. So um admin pode altera-la;
+  // qualquer outra requisicao (operador, UI desabilitada, chamada externa) tem o
+  // valor atual preservado — a tentativa de alteracao e simplesmente ignorada.
+  if (!ehAdminPapel(c.get("usuario")) && "origem_contato" in e) {
+    e.origem_contato = atual.origem_contato ?? "";
+  }
 
   // --- Protecao de integridade cadastral (CNPJ + Razao social) ---
   // Depois de preenchidos e vinculados a ficha, so mudam com desbloqueio
@@ -2858,7 +2888,9 @@ const FORMS_ALIASES: Record<string, string> = {
   "estado (uf) principal de atuação": "uf",
   "cidade(s) de cobertura (liste as principais)": "cidade",
   "nível de interesse no credenciamento": "interesse_parceiro",
-  "como conheceu a oportunidade de credenciamento?": "origem_contato",
+  // "Como conheceu a oportunidade" NÃO alimenta mais a origem: a origem é
+  // derivada pela estrutura do registro (ver linhaParaEmpresa). Esse texto é
+  // capturado a parte apenas para, na falta de sinal estrutural, inferir o canal.
   "cep": "cep",
   "logradouro": "endereco", // base do endereco; numero/complemento sao anexados
   "nome do proprietario": "resp_nome",
@@ -2872,10 +2904,19 @@ function linhaParaEmpresa(d: Row): Row {
   const out: Row = {};
   // Partes do endereco vindas do formulario (compostas no fim).
   let logradouro = "", numero = "", complemento = "";
+  // Cidade-sede do parceiro (coluna "CIDADE SEDE" do mestre). Capturada a parte
+  // porque PREVALECE sobre "Cidade(s) de cobertura" (uma lista solta de municipios
+  // atendidos) quando preenchida — e o caso dos parceiros vindos do formulario.
+  let cidadeSede = "";
+  // Canal informado no formulario ("Como conheceu..."). So usado como ULTIMO
+  // criterio da origem, quando nao ha sinal estrutural (CIDADE SEDE / ID VSM).
+  let comoConheceu = "";
   for (const [k, v] of Object.entries(d)) {
     const key = (k || "").trim().toLowerCase();
     if (key === "número" || key === "numero") { numero = String(v ?? "").trim(); continue; }
     if (key === "complemento") { complemento = String(v ?? "").trim(); continue; }
+    if (key === "cidade sede") { cidadeSede = String(v ?? "").trim(); continue; }
+    if (key === "como conheceu a oportunidade de credenciamento?") { comoConheceu = String(v ?? "").trim(); continue; }
     // Coluna BC do arquivo-mestre ("Situacao do cadastro (auto)") -> pendencia
     // cadastral (campo interno; classificado em montarEmpresa). Tratada a parte:
     // e read-only e NAO passa pelo merge normal (refresh autoritativo no import).
@@ -2890,6 +2931,23 @@ function linhaParaEmpresa(d: Row): Row {
     const partes = [logradouro, numero, complemento].map((s) => s.trim()).filter(Boolean);
     if (partes.length && !out.endereco) out.endereco = partes.join(", ");
   }
+  // "CIDADE SEDE" preenchida -> e a cidade do parceiro (sobrepoe a cidade de
+  // cobertura). Vazia -> mantem o que veio de "Cidade(s) de cobertura", se houver.
+  if (cidadeSede) out.cidade = cidadeSede;
+
+  // Origem do contato DERIVADA pela estrutura do registro (regra do credenciamento):
+  //   1) CIDADE SEDE preenchida  -> "Formulário" (parceiro veio do formulario;
+  //      PREVALECE mesmo quando ja tem ID VSM — e o caso "esta no VSM e no form").
+  //   2) senao, tem ID VSM       -> "VSM" (revenda do portal Vivensis).
+  //   3) senao, infere o canal informado em "Como conheceu" (ou normaliza uma
+  //      origem que ja tenha vindo na planilha, ex. import por modelo).
+  // "" => nao força origem (o merge nao-destrutivo preserva a existente/‘default’).
+  let origem = "";
+  if (cidadeSede) origem = "Formulário";
+  else if (normIdVsm(out.id_vsm)) origem = "VSM";
+  else origem = normalizarOrigem(comoConheceu) || normalizarOrigem(out.origem_contato);
+  if (origem) out.origem_contato = origem;
+  else if (out.origem_contato != null) delete out.origem_contato; // texto não reconhecido não entra
   return out;
 }
 
@@ -2949,6 +3007,16 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
           if (k === "pendencia_cadastro" || k === "pendencia_cadastro_obs") {
             if (atual && String(atual[k] ?? "") === String(e[k] ?? "")) delete e[k];
             continue;
+          }
+          // Origem AUTORITATIVA para sinais estruturais: "Formulário" (veio do
+          // credenciamento — prevalece mesmo sobre uma ficha que era "VSM") e "VSM"
+          // sobrescrevem a origem atual. Demais origens caem no merge nao-destrutivo.
+          if (k === "origem_contato") {
+            const nova = String(e.origem_contato ?? "");
+            if (nova === "Formulário" || nova === "VSM") {
+              if (atual && String(atual.origem_contato ?? "") === nova) delete e.origem_contato;
+              continue;
+            }
           }
           if (estaVazio(e[k]) || (atual && !estaVazio(atual[k]))) delete e[k];
         }

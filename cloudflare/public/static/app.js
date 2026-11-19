@@ -205,7 +205,7 @@ const App = (() => {
       { k: "qtd_filiais", l: "Qtd. filiais", type: "num" },
       { k: "capacidade_vendas_mes", l: "Capacidade de vendas/mês", tip: "Estimativa de quantas antenas a empresa conseguiria vender por mês. Base para classificar o potencial." },
       { k: "interesse_parceiro", l: "Interesse em ser parceiro", type: "select", opts: "interesse", tip: "Nível de interesse que a empresa demonstrou em se tornar parceira Starlink." },
-      { k: "origem_contato", l: "Origem do contato", type: "select", opts: "origens", tip: "Como esta empresa entrou na base (ex.: varredura automática, indicação, cadastro manual)." },
+      { k: "origem_contato", l: "Origem do contato", type: "select", opts: "origens", adminOnly: 1, tip: "Fonte de aquisição / canal de entrada do lead (Formulário, VSM, indicação, evento…). Travado para o time comercial: só um administrador altera (o backend também bloqueia)." },
     ]},
     { t: "Classificação e gestão", f: [
       { k: "faixa_potencial", l: "Potencial (vendas/mês)", type: "select", opts: "faixas_potencial", tip: "Classifica a empresa por volume estimado de vendas/mês. A ficha pode sugerir uma faixa automaticamente." },
@@ -2362,6 +2362,14 @@ const App = (() => {
       return `<div class="${cls}"><label>${f.l}${ico}</label><div class="chk"><input type="checkbox" id="${id}" ${val ? "checked" : ""}><span style="color:var(--muted);font-size:13px">Sim</span></div></div>`;
     if (f.type === "select") {
       const opts = `<option value=""></option>` + (B[f.opts] || []).map(o => `<option ${o === val ? "selected" : ""}>${esc(o)}</option>`).join("");
+      // Campo restrito ao admin (ex.: Origem do contato): o time comercial vê o
+      // valor mas não edita. Fica desabilitado — o `disabled` nem entra no submit,
+      // então nada a limpar no salvar; o backend também preserva o valor atual.
+      const admin = !!(ME && (ME.admin || ME.papel === "admin"));
+      if (f.adminOnly && !admin) {
+        return `<div class="${cls}"><label>${f.l}${ico} <span class="lock-ico" title="Só o administrador altera">🔒</span></label>
+          <select id="${id}" disabled data-adminonly="1" title="Travado para o time comercial — só o administrador altera." style="background:var(--soft);color:var(--muted);cursor:not-allowed">${opts}</select></div>`;
+      }
       return `<div class="${cls}"><label class="${f.req ? "req" : ""}">${f.l}${ico}</label><select id="${id}">${opts}</select></div>`;
     }
     if (f.type === "textarea")
