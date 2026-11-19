@@ -54,6 +54,25 @@ const CAMPOS_BOOL = new Set(["trabalha_telecom", "ja_starlink", "exp_antenas", "
 const CAMPOS_INT = new Set(["qtd_filiais", "ativacoes_mes", "ativacoes_acum"]);
 const CAMPOS_FLOAT = new Set(["latitude", "longitude"]);
 
+// Campos CADASTRAIS cuja AUTORIDADE e a planilha oficial da pasta de rede: no
+// sync/import um valor novo nao-vazio SOBRESCREVE o existente (celula vazia nunca
+// apaga). Decisao da usuaria (2026-11-19): a planilha oficial passou a ser a fonte
+// de verdade do cadastro, entao correcoes nela (telefone/endereco/razao...) devem
+// refletir na base. Os demais campos (status, comercial, datas, responsavel,
+// faixa_potencial, observacoes...) NAO estao aqui e seguem o merge NAO-destrutivo
+// (so preenchem lacuna) — o app continua dono deles. cnpj/razao_social tambem
+// ficam DE FORA de proposito: respeitam a trava cadastral (CAMPOS_PROTEGIDOS) —
+// o 1o preenchimento e livre, depois so admin desbloqueia; o sync nunca a quebra.
+const CAMPOS_CADASTRAIS_PLANILHA = new Set([
+  "nome_fantasia", "inscricao_estadual",
+  "telefone_comercial", "whatsapp", "email_comercial", "site_instagram",
+  "endereco", "cep", "cidade", "uf",
+  "resp_nome", "resp_cargo", "resp_telefone", "resp_whatsapp", "resp_email",
+  "segmento", "produtos",
+  "trabalha_telecom", "ja_starlink", "exp_antenas", "equipe_tecnica", "loja_fisica", "possui_estoque",
+  "qtd_filiais", "capacidade_vendas_mes",
+]);
+
 type Row = Record<string, any>;
 
 // --------------------------------------------------------------------------
@@ -2998,8 +3017,9 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
         const e = montarEmpresa(data, false);
         // ID VSM e imutavel depois de definido.
         if (atual && String(atual.id_vsm ?? "").trim() !== "") e.id_vsm = atual.id_vsm;
-        // Merge nao-destrutivo: so preenche campo que a ficha NAO tem; celula
-        // vazia do arquivo nunca apaga dado existente.
+        // Merge por CLASSE de campo: a planilha oficial sobrescreve o CADASTRAL
+        // (CAMPOS_CADASTRAIS_PLANILHA); os demais campos seguem o merge
+        // nao-destrutivo (so preenchem lacuna; celula vazia nunca apaga).
         for (const k of Object.keys(e)) {
           if (k === "atualizado_em") continue;
           // Pendencia cadastral e AUTORITATIVA: reflete sempre a coluna BC (inclusive
@@ -3018,7 +3038,22 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
               continue;
             }
           }
+          // Campo CADASTRAL: a planilha manda. Valor novo nao-vazio sobrescreve;
+          // valor vazio nunca apaga; valor igual ao atual nao gera escrita.
+          if (CAMPOS_CADASTRAIS_PLANILHA.has(k)) {
+            if (estaVazio(e[k]) || (atual && String(atual[k] ?? "") === String(e[k] ?? ""))) delete e[k];
+            continue;
+          }
+          // Demais campos (comercial/status/datas/responsavel): nao-destrutivo.
           if (estaVazio(e[k]) || (atual && !estaVazio(atual[k]))) delete e[k];
+        }
+        // Se cidade/UF foram sobrescritas pela planilha, a microrregiao derivada
+        // acompanha (senao ficaria presa ao municipio antigo).
+        if ("cidade" in e || "uf" in e) {
+          const muniFinal = String(e.cidade ?? atual?.cidade ?? "");
+          const ufFinal = String(e.uf ?? atual?.uf ?? "").toUpperCase();
+          const novaMr = muniFinal ? geo.microrregiaoDe(muniFinal, ufFinal || null) : null;
+          if (novaMr && novaMr !== String(atual?.microrregiao ?? "")) e.microrregiao = novaMr;
         }
         if (Object.keys(e).some((k) => k !== "atualizado_em")) {
           e.atualizado_em = agora();
@@ -3056,6 +3091,129 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
 
   const criados = await inserirEmpresasLote(db, novos, erros);
   return { criados, atualizados, mesclados, ignorados, erros };
+}
+
+// --------------------------------------------------------------------------
+// Ingestao da 2a planilha oficial: "Vivensis_Instaladores_Status_Bradel.xlsx".
+// Multi-aba; cada aba atualiza fichas JA existentes de forma direcionada (NAO
+// cria fichas novas). Abas tratadas (decisao da usuaria 2026-11-19):
+//   - "Capilaridade-vsm": AUTORITATIVA — pendencia_vsm/vendas_vsm/instalacoes_vsm/
+//     ja_vendeu refletem o portal VSM (sobrescrevem); telefone so preenche lacuna.
+//   - "Status-cad parceiros-wfm": status_vivensis (APROVADO/REPROVADO...) — sobrescreve.
+//   - "Instaladoras-wfm": enriquece contato/telefone faltante (nao-destrutivo).
+// A aba "Lead Bradel" e IGNORADA de proposito (nao criamos leads novos daqui).
+// Reaproveita o indice anti-duplicata (acharDupIndice): match CNPJ -> ID VSM ->
+// nome+UF+cidade. O "Id" das abas WFM NAO e o ID VSM (e numeracao de cadastro),
+// por isso so a Capilaridade passa id_vsm no match; as demais casam por nome+cidade.
+async function importarVivensis(db: D1Database, buf: ArrayBuffer): Promise<ResultadoImport> {
+  const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+  let atualizados = 0, ignorados = 0;
+  const erros: string[] = [];
+
+  // Indice LOCAL para casar a ficha a atualizar: CNPJ -> ID VSM -> nome+UF+cidade.
+  // Difere do indice anti-duplicata do import (que exclui fichas COM CNPJ do match
+  // por nome, para nao fundir CNPJs distintos de mesmo nome): aqui sao updates
+  // DIRECIONADOS a uma ficha (nao fusao de identidades), entao casar uma ficha de
+  // mesmo nome+cidade que ja tenha CNPJ e o comportamento desejado.
+  const { results } = await db.prepare("SELECT id, cnpj_norm, id_vsm, razao_social, uf, cidade FROM empresas").all<Row>();
+  const porCnpj = new Map<string, number>(), porVsm = new Map<string, number>(), porNome = new Map<string, number>();
+  for (const r of results ?? []) {
+    const id = Number(r.id);
+    const cn = soDigitos(r.cnpj_norm); if (cn && !porCnpj.has(cn)) porCnpj.set(cn, id);
+    const v = normIdVsm(r.id_vsm); if (v && !porVsm.has(v)) porVsm.set(v, id);
+    const k = chaveNomeCidade(r.razao_social, r.uf, r.cidade); if (k && !porNome.has(k)) porNome.set(k, id);
+  }
+  const acharFicha = (m: Row): number | null => {
+    const cn = soDigitos(m.cnpj); if (cn && porCnpj.has(cn)) return porCnpj.get(cn)!;
+    const v = normIdVsm(m.id_vsm); if (v && porVsm.has(v)) return porVsm.get(v)!;
+    const k = chaveNomeCidade(m.razao_social, m.uf, m.cidade); if (k && porNome.has(k)) return porNome.get(k)!;
+    return null;
+  };
+
+  const aba = (nome: string): Row[] => {
+    const alvo = wb.SheetNames.find((s) => L.norm(s) === L.norm(nome));
+    if (!alvo) return [];
+    return XLSX.utils.sheet_to_json<Row>(wb.Sheets[alvo], { defval: "" });
+  };
+
+  // Update direcionado numa ficha existente. `sobrescreve` = campos autoritativos
+  // (valor nao-vazio vence o atual; "" nunca apaga). `lacuna` = so preenche campo
+  // vazio. So grava o que muda. Retorna o efeito para a contagem.
+  const aplicar = async (matchData: Row, sobrescreve: Row, lacuna: Row = {}): Promise<"atualizado" | "igual" | "sem_ficha"> => {
+    const id = acharFicha(matchData);
+    if (!id) return "sem_ficha";
+    const atual = await db.prepare("SELECT * FROM empresas WHERE id=?").bind(id).first<Row>();
+    const e: Row = {};
+    for (const [k, v] of Object.entries(sobrescreve)) {
+      if (v === undefined || v === "" || (typeof v === "string" && v.trim() === "")) continue; // vazio nao apaga
+      if (atual && String(atual[k] ?? "") === String(v ?? "")) continue;
+      e[k] = v;
+    }
+    for (const [k, v] of Object.entries(lacuna)) {
+      if (v === undefined || String(v).trim() === "") continue;
+      if (atual && !estaVazio(atual[k])) continue; // ja preenchido: nao mexe
+      if (atual && String(atual[k] ?? "") === String(v ?? "")) continue;
+      e[k] = v;
+    }
+    if (!Object.keys(e).length) return "igual";
+    e.atualizado_em = agora();
+    await atualizarEmpresa(db, id, e);
+    return "atualizado";
+  };
+  const contar = (ef: "atualizado" | "igual" | "sem_ficha") => {
+    if (ef === "atualizado") atualizados += 1; else ignorados += 1;
+  };
+
+  // 1) Capilaridade-vsm (AUTORITATIVA). Match por ID VSM -> nome+cidade.
+  for (const r of aba("Capilaridade-vsm")) {
+    try {
+      const empresa = limpar(r["Empresa"]);
+      if (!empresa) { ignorados += 1; continue; }
+      const venderam = toInt(r["Parceiros que Venderam"]);
+      const vendas = toInt(r["Vendas Concluídas"]);
+      const sobrescreve: Row = {
+        pendencia_vsm: limpar(r["Pendência Treino/Contrato"]),
+        vendas_vsm: vendas,
+        instalacoes_vsm: toInt(r["Instalações Executadas"]),
+        ja_vendeu: (venderam > 0 || vendas > 0) ? 1 : 0,
+      };
+      const lacuna: Row = { telefone_comercial: telParaArmazenar(String(r["Telefone"] ?? ""), false) };
+      const matchData = { id_vsm: r["ID Parceiro"], razao_social: empresa, uf: r["UF"], cidade: r["Município"] };
+      contar(await aplicar(matchData, sobrescreve, lacuna));
+    } catch (ex: any) { erros.push(`Capilaridade: ${ex?.message ?? ex}`); }
+  }
+
+  // 2) Status-cad parceiros-wfm. status_vivensis = Status (sobrescreve). Casa por
+  //    nome+cidade (o "Id" aqui NAO e o ID VSM, nao entra no match).
+  for (const r of aba("Status-cad parceiros-wfm")) {
+    try {
+      const razao = limpar(r["Razão Social"]);
+      if (!razao) { ignorados += 1; continue; }
+      const st = limpar(r["Status"]).toUpperCase();
+      const motivo = limpar(r["Motivo Reprovação"]);
+      const sv = st && motivo ? `${st} — ${motivo}` : st;
+      const matchData = { razao_social: razao, uf: r["Estado"], cidade: r["Cidade"] };
+      contar(await aplicar(matchData, { status_vivensis: sv }));
+    } catch (ex: any) { erros.push(`Status-wfm: ${ex?.message ?? ex}`); }
+  }
+
+  // 3) Instaladoras-wfm (ENRIQUECE, nao-destrutivo). Casa por CNPJ -> nome+cidade.
+  for (const r of aba("Instaladoras-wfm")) {
+    try {
+      const razao = limpar(r["Nome/Razão Social"]);
+      if (!razao) { ignorados += 1; continue; }
+      const cel = String(r["Celular do Contato"] ?? "");
+      const lacuna: Row = {
+        resp_nome: limpar(r["Nome do Contato"]),
+        resp_whatsapp: telParaArmazenar(cel, true),
+        telefone_comercial: telParaArmazenar(cel, false),
+      };
+      const matchData = { cnpj: r["CNPJ"], razao_social: razao, uf: r["Estado"], cidade: r["Cidade"] };
+      contar(await aplicar(matchData, {}, lacuna));
+    } catch (ex: any) { erros.push(`Instaladoras-wfm: ${ex?.message ?? ex}`); }
+  }
+
+  return { criados: 0, atualizados, mesclados: 0, ignorados, erros };
 }
 
 app.post("/api/import", async (c) => {
@@ -3188,8 +3346,12 @@ app.post("/api/sync/ingest", async (c) => {
     return c.json({ erro: run.mensagem }, 400);
   }
 
-  // Nao reprocessa arquivo identico ao ultimo (incremental — §3/§4 do brief).
-  const hashAnterior = (await metaGet(db, "sync_master_hash")) || "";
+  // Hash POR ARQUIVO: o mestre guarda em "sync_master_hash" (compat); a planilha
+  // Vivensis em "sync_hash:vivensis". Cada arquivo oficial so reprocessa quando o
+  // SEU proprio hash muda (incremental — §3/§4 do brief).
+  const ehVivensis = L.norm(nomeArq).includes("vivensis") && L.norm(nomeArq).includes("instaladores");
+  const chaveHash = ehVivensis ? "sync_hash:vivensis" : "sync_master_hash";
+  const hashAnterior = (await metaGet(db, chaveHash)) || "";
   if (sha256 && sha256 === hashAnterior) {
     const run = { executado_em, origem, ...scan, master_mudou: 0, status: "sem_alteracao", mensagem: "Arquivo-mestre sem alteração (hash igual ao último)." };
     await gravarSyncRun(db, run);
@@ -3197,20 +3359,23 @@ app.post("/api/sync/ingest", async (c) => {
   }
 
   try {
-    const registros = parseArquivoRegistros(buf!, nomeArq);
-    const r = await importarRegistros(db, registros);
-    if (sha256) await metaSet(db, "sync_master_hash", sha256);
+    // Roteia pelo arquivo: mestre -> import de fichas; Vivensis -> ingestao por aba.
+    const r = ehVivensis
+      ? await importarVivensis(db, buf!)
+      : await importarRegistros(db, parseArquivoRegistros(buf!, nomeArq));
+    if (sha256) await metaSet(db, chaveHash, sha256);
+    const rotulo = ehVivensis ? "Vivensis" : "Mestre";
     const run = {
       executado_em, origem, ...scan, master_mudou: 1, status: "ok",
       import_criados: r.criados, import_atualizados: r.atualizados, import_mesclados: r.mesclados, import_ignorados: r.ignorados,
-      mensagem: `Importação: ${r.criados} criadas, ${r.atualizados} atualizadas, ${r.mesclados} mescladas, ${r.ignorados} ignoradas.`,
+      mensagem: `Importação (${rotulo}): ${r.criados} criadas, ${r.atualizados} atualizadas, ${r.mesclados} mescladas, ${r.ignorados} ignoradas.`,
       detalhe: (r.erros || []).slice(0, 20).join(" | "),
     };
     await gravarSyncRun(db, run);
     await registrarAuditoria(c, { acao: "sync_import", origem: "sistema", depois: run.mensagem });
     return c.json({ ...run, erros: r.erros });
   } catch (ex: any) {
-    const run = { executado_em, origem, ...scan, master_mudou: 1, status: "falha", mensagem: "Falha ao importar o arquivo-mestre: " + (ex?.message ?? ex) };
+    const run = { executado_em, origem, ...scan, master_mudou: 1, status: "falha", mensagem: "Falha ao importar o arquivo oficial: " + (ex?.message ?? ex) };
     await gravarSyncRun(db, run);
     return c.json({ erro: run.mensagem }, 500);
   }

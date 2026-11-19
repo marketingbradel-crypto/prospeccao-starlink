@@ -5,17 +5,22 @@
 .DESCRIPTION
   O sistema roda num Cloudflare Worker (nuvem) que NAO enxerga a pasta de rede
   (U:\Matriz\Back office\Dep / \\192.168.172.145\Documentos\...). Este agente roda
-  DENTRO da rede da Bradel, le a pasta, detecta se o arquivo-mestre
-  (Cadastros Starlink - consolidado Oficial.xlsx) mudou e, se mudou, EMPURRA o
-  arquivo para o Worker (/api/sync/ingest), que reimporta na base de forma
-  incremental e nao-destrutiva. Terca e sexta as 12:00 (BRT), via Agendador de
-  Tarefas do Windows (ver instalar-tarefa.ps1). Ver LEIA-ME.md.
+  DENTRO da rede da Bradel, le a pasta, detecta se algum ARQUIVO OFICIAL mudou
+  (hash) e, se mudou, EMPURRA o arquivo para o Worker (/api/sync/ingest), que
+  reimporta na base. Sao DOIS oficiais na raiz (cada um enviado so quando o SEU
+  hash muda):
+    - "Cadastros Starlink - consolidado Oficial.xlsx" -> import das fichas (o
+      CADASTRAL da planilha PREVALECE; comercial/status do app fica protegido).
+    - "Vivensis_Instaladores_Status_Bradel.xlsx" -> ingestao por aba (Capilaridade
+      VSM autoritativa, status de cadastro e enriquecimento de contato).
+  Em dias uteis (seg-sex) as 09:00, 13:00 e 17:00 (BRT), via Agendador de Tarefas
+  do Windows (ver instalar-tarefa.ps1). Ver LEIA-ME.md.
 
   Incremental: so calcula o hash SHA-256 de arquivos cujo tamanho/data mudou
-  (nao re-hasheia tudo) e so envia o mestre quando ele realmente muda. Resiliente:
+  (nao re-hasheia tudo) e so envia um oficial quando ele realmente muda. Resiliente:
   se a pasta estiver indisponivel, registra a falha no servidor, MANTEM o ultimo
-  estado valido e sai (o Agendador re-tenta). Nenhum dado interno e sobrescrito
-  sem validacao (o Worker faz merge nao-destrutivo + dedup).
+  estado valido e sai (o Agendador re-tenta); um envio que falha preserva o hash
+  anterior daquele arquivo para re-tentar na proxima execucao.
 
 .PARAMETER Now
   Execucao manual imediata (testes / necessidade extraordinaria). Marca origem='manual'.
@@ -44,6 +49,14 @@ $cfg = [ordered]@{
   # agendada rodando sem a sessao do usuario). O U: entra como fallback.
   PastaOrigem   = '\\192.168.172.145\Documentos\Matriz\Back office\Dep'
   PastaFallback = 'U:\Matriz\Back office\Dep'
+  # Arquivos OFICIAIS (raiz da pasta) que alimentam a base. Cada um e enviado de
+  # forma independente e so quando o SEU hash muda. O Worker roteia pelo nome:
+  # o consolidado -> import de fichas; a planilha Vivensis -> ingestao por aba.
+  ArquivosOficiais = @(
+    'Cadastros Starlink - consolidado Oficial.xlsx',
+    'Vivensis_Instaladores_Status_Bradel.xlsx'
+  )
+  # Compat retro: se um config antigo so tiver "ArquivoMestre", ele e usado.
   ArquivoMestre = 'Cadastros Starlink - consolidado Oficial.xlsx'
   ApiBase       = 'https://prospeccao-starlink.bradel.workers.dev'
   Token         = ''
@@ -256,45 +269,59 @@ $counts = @{
 Write-Log ("Varredura: {0} arquivos | novos={1} modificados={2} removidos={3} inalterados={4}" -f `
     $encontrados, $novos, $modificados, $removidos, $inalterados)
 
-# 3) Arquivo-mestre: envia so se mudou (hash != ultimo enviado). Casa SOMENTE o
-#    arquivo na RAIZ da pasta (rel == nome do mestre), nunca homonimos em subpastas
-#    (ex.: BKP\Cadastros Starlink - consolidado Oficial.xlsx).
-$chaveMestre = $estadoNovo.Keys | Where-Object { $_ -ieq $cfg.ArquivoMestre } | Select-Object -First 1
-if (-not $chaveMestre) {
-  $msg = "Arquivo-mestre nao encontrado na pasta: $($cfg.ArquivoMestre)."
-  Write-Log $msg 'WARN'
-  Post-Run (@{ origem = $Origem; status = 'falha'; mensagem = $msg } + $counts)
-  # Ainda assim salva o estado da varredura (os demais arquivos foram vistos).
-  Save-State $estadoNovo
-  exit 1
+# 3) Arquivos OFICIAIS: envia cada um que mudou (hash != ultimo enviado). Casa
+#    SOMENTE o arquivo na RAIZ da pasta (rel == nome), nunca homonimos em subpastas
+#    (ex.: BKP\Cadastros Starlink - consolidado Oficial.xlsx). Cada arquivo e
+#    independente: um pode mudar e o outro nao.
+$oficiais = @($cfg.ArquivosOficiais | Where-Object { $_ })
+if (-not $oficiais -or $oficiais.Count -eq 0) { $oficiais = @($cfg.ArquivoMestre) }  # compat retro
+
+$algoMudou = $false; $algumErro = $false; $enviados = 0
+foreach ($nomeOficial in $oficiais) {
+  $chave = $estadoNovo.Keys | Where-Object { $_ -ieq $nomeOficial } | Select-Object -First 1
+  if (-not $chave) {
+    Write-Log "Arquivo oficial nao encontrado na raiz da pasta: $nomeOficial" 'WARN'
+    $algumErro = $true
+    continue
+  }
+  $hAtual = [string]$estadoNovo[$chave].sha256
+  $hAnt   = if ($estadoAnterior[$chave]) { [string]$estadoAnterior[$chave].sha256 } else { '' }
+  if ($hAtual -eq $hAnt -and $hAnt) {
+    Write-Log "[$nomeOficial] sem alteracao (hash igual ao ultimo). Nada a importar."
+    continue
+  }
+  $algoMudou = $true
+  $caminho = Join-Path $pasta $chave
+  # 4) Mudou (ou 1a execucao): envia o arquivo cru. O Worker reimporta e confere
+  #    o hash dele (defesa dupla contra reprocesso).
+  Write-Log "[$nomeOficial] mudou. Enviando para importacao ($caminho)..."
+  try {
+    $resp = Post-Ingest -FilePath $caminho -Sha $hAtual -Counts $counts
+    Write-Log "[$nomeOficial] Resposta do servidor: $resp"
+    $enviados++
+  } catch {
+    Write-Log "[$nomeOficial] Falha ao enviar/importar: $($_.Exception.Message)" 'ERROR'
+    $algumErro = $true
+    # Preserva o estado ANTERIOR deste arquivo (restaura o hash antigo) para que a
+    # mudanca que falhou seja re-tentada na proxima execucao e nao se perca.
+    if ($estadoAnterior.ContainsKey($chave)) { $estadoNovo[$chave] = $estadoAnterior[$chave] }
+    else { $estadoNovo.Remove($chave) }
+  }
 }
 
-$hashMestreAtual = [string]$estadoNovo[$chaveMestre].sha256
-$hashMestreAnterior = if ($estadoAnterior[$chaveMestre]) { [string]$estadoAnterior[$chaveMestre].sha256 } else { '' }
-$caminhoMestre = Join-Path $pasta $chaveMestre
+# Estado salvo SEMPRE: os arquivos que falharam tiveram o hash anterior restaurado
+# acima (serao re-tentados); os que foram OK ou estavam inalterados ficam marcados.
+Save-State $estadoNovo
 
-if ($hashMestreAtual -eq $hashMestreAnterior -and $hashMestreAnterior) {
-  Write-Log "Arquivo-mestre sem alteracao (hash igual ao ultimo). Nada a importar."
-  Post-Run (@{ origem = $Origem; status = 'sem_alteracao'; mensagem = 'Arquivo-mestre sem alteracao.' } + $counts)
-  Save-State $estadoNovo
+if ($algumErro) {
+  Post-Run (@{ origem = $Origem; status = 'falha'; mensagem = "Falha em 1+ arquivo(s) oficial(is) ($enviados enviado(s) com sucesso)." } + $counts)
+  Write-Log "===== Fim (com falha em arquivo oficial) ====="
+  exit 1
+}
+if (-not $algoMudou) {
+  Post-Run (@{ origem = $Origem; status = 'sem_alteracao'; mensagem = 'Nenhum arquivo oficial mudou.' } + $counts)
   Write-Log "===== Fim (sem alteracao) ====="
   exit 0
 }
-
-# 4) Mudou (ou primeira execucao): envia o arquivo cru. O Worker reimporta de forma
-#    nao-destrutiva + dedup e ainda confere o hash (defesa dupla contra reprocesso).
-Write-Log "Arquivo-mestre mudou. Enviando para importacao ($caminhoMestre)..."
-try {
-  $resp = Post-Ingest -FilePath $caminhoMestre -Sha $hashMestreAtual -Counts $counts
-  Write-Log "Resposta do servidor: $resp"
-  # So agora (apos ack) grava o estado — garante retry se o envio tivesse falhado.
-  Save-State $estadoNovo
-  Write-Log "===== Fim (importado) ====="
-  exit 0
-} catch {
-  $msg = "Falha ao enviar/importar o arquivo-mestre: $($_.Exception.Message)"
-  Write-Log $msg 'ERROR'
-  Post-Run (@{ origem = $Origem; status = 'falha'; mensagem = $msg } + $counts)
-  # NAO salva o estado: mantem o ultimo valido para re-tentar na proxima execucao.
-  exit 1
-}
+Write-Log "===== Fim (importado: $enviados arquivo(s)) ====="
+exit 0

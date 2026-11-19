@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Instala/atualiza a tarefa agendada que roda o agente de sincronizacao da pasta
-  de rede nas TERCAS e SEXTAS as 12:00 (horario local = BRT nesta maquina).
+  de rede em dias uteis (SEG a SEX) as 09:00, 13:00 e 17:00 (horario local = BRT).
 
 .DESCRIPTION
   Cria a tarefa "ProspeccaoStarlink-SyncDep" no Agendador de Tarefas do Windows.
@@ -13,8 +13,8 @@
   Observacao: por padrao a tarefa roda SOMENTE quando o usuario esta logado
   (-LogonType Interactive), porque o drive U: so existe na sessao do usuario.
   O agente ja prioriza o caminho UNC (\\192.168.172.145\...), que normalmente
-  funciona mesmo sem o drive mapeado; ainda assim, para o horario fixo ser
-  confiavel, mantenha o PC ligado e com a sessao iniciada as ter/sex ao meio-dia.
+  funciona mesmo sem o drive mapeado; ainda assim, para os horarios fixos serem
+  confiaveis, mantenha o PC ligado e com a sessao iniciada nos dias uteis.
 
 .PARAMETER Remover
   Remove a tarefa em vez de instalar.
@@ -44,9 +44,13 @@ $exe  = if ($pwsh) { $pwsh.Source } else { Join-Path $env:SystemRoot 'System32\W
 $acao = New-ScheduledTaskAction -Execute $exe `
   -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Agente`""
 
-# Dois gatilhos semanais: terca e sexta as 12:00 (horario local da maquina).
-$gatTer = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Tuesday -At '12:00'
-$gatSex = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday  -At '12:00'
+# Tres gatilhos diarios em dias uteis (seg-sex): 09:00, 13:00 e 17:00 (horario
+# local da maquina = BRT). O agente so ENVIA quando um arquivo oficial muda, entao
+# execucoes "a seco" sao baratas (so varrem a pasta e saem).
+$diasUteis = @('Monday','Tuesday','Wednesday','Thursday','Friday')
+$gat09 = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $diasUteis -At '09:00'
+$gat13 = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $diasUteis -At '13:00'
+$gat17 = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $diasUteis -At '17:00'
 
 $cfg = New-ScheduledTaskSettingsSet `
   -StartWhenAvailable `
@@ -62,13 +66,13 @@ if (Get-ScheduledTask -TaskName $NomeTarefa -ErrorAction SilentlyContinue) {
   Unregister-ScheduledTask -TaskName $NomeTarefa -Confirm:$false
 }
 Register-ScheduledTask -TaskName $NomeTarefa `
-  -Description 'Sincroniza a pasta U:\Matriz\Back office\Dep com a plataforma Prospeccao Starlink (ter/sex 12:00).' `
-  -Action $acao -Trigger @($gatTer, $gatSex) -Settings $cfg -Principal $principal | Out-Null
+  -Description 'Sincroniza a pasta U:\Matriz\Back office\Dep com a plataforma Prospeccao Starlink (seg-sex 09:00, 13:00 e 17:00).' `
+  -Action $acao -Trigger @($gat09, $gat13, $gat17) -Settings $cfg -Principal $principal | Out-Null
 
 Write-Host "Tarefa '$NomeTarefa' instalada."
 Write-Host "  Executavel : $exe"
 Write-Host "  Agente     : $Agente"
-Write-Host "  Gatilhos   : Terca 12:00 e Sexta 12:00 (horario local)"
+Write-Host "  Gatilhos   : Seg-Sex as 09:00, 13:00 e 17:00 (horario local)"
 Write-Host ""
 Write-Host "Testar agora:  Start-ScheduledTask -TaskName '$NomeTarefa'"
 Write-Host "Ver proxima:   (Get-ScheduledTask -TaskName '$NomeTarefa' | Get-ScheduledTaskInfo).NextRunTime"

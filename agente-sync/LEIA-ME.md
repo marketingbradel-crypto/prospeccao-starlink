@@ -1,8 +1,14 @@
 # Agente de sincronização da pasta de rede → Prospecção Starlink
 
 Integra a pasta **`U:\Matriz\Back office\Dep`** com a plataforma (Cloudflare Worker),
-reimportando o cadastro-mestre na base **toda terça e sexta às 12:00 (BRT)**, de forma
-**incremental** (só quando o arquivo muda), **sem duplicar** e **sem sobrescrever** dados.
+reimportando os **arquivos oficiais** na base **em dias úteis (seg–sex) às 09:00, 13:00 e
+17:00 (BRT)**, de forma **incremental** (só quando um arquivo muda) e **sem duplicar**.
+
+> **Fonte de verdade = a planilha oficial.** Desde 19/11/2026 a planilha oficial PREVALECE
+> nos dados **cadastrais** (razão/telefone/endereço/e-mail/UF/cidade...): uma correção na
+> planilha **atualiza** a base. Já os dados **comerciais** feitos no app (status do funil,
+> contatos, potencial, responsável, observações) ficam **protegidos** — a planilha nunca os
+> apaga. CNPJ e razão social respeitam a trava cadastral (só admin desbloqueia).
 
 ## Por que existe um agente local?
 
@@ -15,17 +21,26 @@ alcança** `U:` nem `\\192.168.172.145` — esse caminho só existe dentro da re
                                   └──empurra──►  Worker /api/sync/ingest  ──►  base (D1)
 ```
 
-O **agendamento** (ter/sex 12:00) fica no **Agendador de Tarefas do Windows** desta máquina.
+O **agendamento** (seg–sex 09:00/13:00/17:00) fica no **Agendador de Tarefas do Windows** desta máquina.
 
 ## O que é sincronizado
 
-Apenas o arquivo-mestre **`Cadastros Starlink - consolidado Oficial.xlsx`** (raiz da pasta).
+Dois **arquivos oficiais** na raiz da pasta (cada um enviado só quando o **seu** hash muda):
+
+1. **`Cadastros Starlink - consolidado Oficial.xlsx`** → importa as **fichas**. O cadastral da
+   planilha **prevalece** (sobrescreve); o comercial/status do app fica protegido; dedup por
+   CNPJ / ID VSM / nome+UF+cidade (não duplica).
+2. **`Vivensis_Instaladores_Status_Bradel.xlsx`** → **ingestão por aba** (atualiza fichas já
+   existentes, não cria novas):
+   - **Capilaridade-vsm** → pendência VSM, vendas, instalações e "já vendeu" (dados do portal
+     VSM, **autoritativos**);
+   - **Status-cad parceiros-wfm** → status de cadastro Vivensis (APROVADO/reprovado + motivo);
+   - **Instaladoras-wfm** → preenche contato/telefone **faltante** (não-destrutivo).
+   - (A aba *Lead Bradel* é ignorada de propósito.)
+
 Os demais arquivos (PDFs, Serasa, backups) são **varridos e contabilizados** (novos/modificados/
 removidos/inalterados aparecem no histórico), mas **não são importados**. A varredura preserva a
 estrutura de subpastas.
-
-A reimportação é **não-destrutiva**: o Worker só preenche campos vazios e deduplica por
-CNPJ / ID VSM / nome+UF+cidade — nunca apaga nem duplica ficha existente.
 
 ---
 
@@ -75,7 +90,8 @@ cd "..\agente-sync"
 powershell -ExecutionPolicy Bypass -File .\instalar-tarefa.ps1
 ```
 
-Cria a tarefa **ProspeccaoStarlink-SyncDep** com gatilhos **terça 12:00** e **sexta 12:00**.
+Cria a tarefa **ProspeccaoStarlink-SyncDep** com gatilhos em **dias úteis (seg–sex) às 09:00,
+13:00 e 17:00**.
 
 ---
 
@@ -97,8 +113,10 @@ aba **Gerencial** do sistema.
 - **Estado** em `%ProgramData%\ProspeccaoStarlink\sync-state.json`: por arquivo, guarda
   `{tamanho, data de modificação, SHA-256}`. Só re-hasheia arquivos cujo tamanho/data mudou
   (não varre o conteúdo inteiro à toa).
-- **Decisão de envio**: só manda o mestre quando o SHA-256 dele muda. O Worker ainda confere o hash
-  (`sync_master_hash`) e, se for igual ao último, **não reprocessa** (registra `sem_alteracao`).
+- **Decisão de envio**: manda **cada arquivo oficial** só quando o SHA-256 **dele** muda. O Worker
+  ainda confere o hash por arquivo (`sync_master_hash` para o mestre, `sync_hash:vivensis` para a
+  planilha Vivensis) e, se for igual ao último, **não reprocessa** (registra `sem_alteracao`). Um
+  envio que falha preserva o hash anterior **daquele** arquivo, para re-tentar na próxima execução.
 - **Integridade**: o estado local só é salvo **depois** do `ack` do servidor — um envio que falhou é
   re-tentado na próxima execução.
 - **Falhas** (pasta indisponível / sem permissão / sem rede): registradas em `/api/sync/run` com
@@ -111,8 +129,8 @@ aba **Gerencial** do sistema.
   confirme que o secret `SYNC_TOKEN` existe no Worker (mesmo valor).
 - **"Token de sincronização inválido" (401)** → o token do agente ≠ o secret do Worker.
 - **"Pasta de rede indisponível"** → confirme acesso: `Test-Path '\\192.168.172.145\Documentos\Matriz\Back office\Dep'`.
-  A tarefa roda só com o usuário logado; para o horário fixo ser confiável, mantenha **este PC ligado
-  e logado** nas terças/sextas ao meio-dia. O agente prioriza o caminho UNC, que costuma funcionar
+  A tarefa roda só com o usuário logado; para os horários fixos serem confiáveis, mantenha **este PC
+  ligado e logado** nos dias úteis. O agente prioriza o caminho UNC, que costuma funcionar
   mesmo sem o drive `U:` mapeado.
 - **Testar apontando para o Worker local** (`wrangler dev`): rode
   `.\sync-dep.ps1 -Now` com um `config.local.json` cujo `ApiBase` seja `http://127.0.0.1:8787`.
