@@ -1743,7 +1743,7 @@ const App = (() => {
     { k: "vencidas", tit: "Vencidas", cls: "fu-venc", desc: "ação com data no passado" },
     { k: "hoje_list", tit: "Para hoje", cls: "fu-hoje", desc: "ação marcada para hoje" },
     { k: "proximas", tit: "Próximos 7 dias", cls: "fu-prox", desc: "ação agendada em breve" },
-    { k: "parados", tit: "Parados", sub: "sem contato há 14+ dias", cls: "fu-parado", desc: "sem próxima ação marcada" },
+    { k: "parados", tit: "Parados", sub: "nunca contatados ou sem contato há 14+ dias", cls: "fu-parado", desc: "sem próxima ação marcada" },
   ];
 
   // Filtros do follow-up: um único handler, roteado pelo id do <select>.
@@ -1756,16 +1756,14 @@ const App = (() => {
     else if (id === "fu-vendeu") fuVendeu = v;
     else if (id === "fu-faixa") fuFaixa = v;
     else if (id === "fu-pend") fuPend = v;
-    renderFollowUp();
+    renderFollowUpRows();
   }
 
-  // Busca por nome: re-renderiza e devolve o foco/cursor ao campo (senão
-  // o input perderia o foco a cada tecla por causa do innerHTML).
+  // Busca por nome: re-renderiza só a lista. A toolbar (e o próprio campo) não é
+  // reconstruída, então o foco/cursor permanece naturalmente — sem gambiarra.
   function fuBuscar(v) {
     fuBusca = v || "";
-    renderFollowUp();
-    const inp = $("fu-busca");
-    if (inp) { inp.focus(); const n = inp.value.length; try { inp.setSelectionRange(n, n); } catch (e) {} }
+    renderFollowUpRows();
   }
 
   function renderFollowUp() {
@@ -1776,7 +1774,16 @@ const App = (() => {
       box.innerHTML = `<div class="empty">Tudo em dia 🎉 — nenhuma ação vencida ou pendente. Marque a "próxima ação" dos prospects na ficha para acompanhá-los aqui.</div>`;
       return;
     }
-    // Valores presentes no follow-up (para popular os filtros dinamicamente)
+    // A toolbar é montada UMA vez por carga: as opções derivam só do FU, não do
+    // estado dos filtros. As linhas vão num container separado (#fu-lista), que é
+    // o único re-renderizado ao digitar na busca ou trocar um filtro — assim os
+    // <select> não são reconstruídos e o campo de busca não perde foco/cursor.
+    box.innerHTML = fuToolbar(d) + `<div id="fu-lista"></div>`;
+    renderFollowUpRows();
+  }
+
+  // Monta a barra de filtros a partir dos valores presentes no follow-up.
+  function fuToolbar(d) {
     const todos = FU_GRUPOS.flatMap(g => d[g.k] || []);
     const ufs = [...new Set(todos.map(x => x.uf).filter(Boolean))].sort();
     const resps = [...new Set(todos.map(x => x.responsavel).filter(Boolean).concat(fuResp ? [fuResp] : []))].sort();
@@ -1795,7 +1802,7 @@ const App = (() => {
     // Consultor de carteira (tem responsável e não é gerencial/admin) fica preso à
     // própria carteira — o backend já só envia a dele, então o seletor some.
     const fuTravado = !!(ME && ME.responsavel && !ME.perm_gerencial && !ME.admin);
-    const filtro = `
+    return `
       <div class="fu-toolbar">
         <label class="fu-filtro fu-busca-wrap">Buscar
           <input id="fu-busca" type="search" class="fu-busca" placeholder="Empresa, parceiro ou cidade…"
@@ -1809,6 +1816,13 @@ const App = (() => {
         ${sel("fu-pend", "Pendência VSM", fuPend, [{ v: "treinar", t: "Falta treinar" }, { v: "contrato", t: "Falta assinar contrato" }, { v: "sem", t: "Sem pendência" }])}
         ${sel("fu-faixa", "Potencial", fuFaixa, faixas)}
       </div>`;
+  }
+
+  // Re-renderiza SÓ a lista (aplica busca + filtros). Não toca na toolbar.
+  function renderFollowUpRows() {
+    const wrap = $("fu-lista");
+    const d = FU;
+    if (!wrap || !d) return;
     const buscaN = norm(fuBusca);
     const passa = (x) => {
       if (buscaN) {
@@ -1845,7 +1859,7 @@ const App = (() => {
           <div class="fu-rows">${lista.map(fuRow).join("")}</div>
         </div>`;
     }).join("");
-    box.innerHTML = filtro + (corpo || `<div class="empty">Nenhum prospect com os filtros aplicados.</div>`);
+    wrap.innerHTML = corpo || `<div class="empty">Nenhum prospect com os filtros aplicados.</div>`;
   }
 
   function atualizarBadgeFollowUp(d) {
