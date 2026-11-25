@@ -1601,29 +1601,25 @@ const App = (() => {
           <span class="map-ctx">Consolidado dos parceiros que <b>efetivamente venderam</b> · mesma fonte do Mapa e do Follow-up · quantidade = Vendas Concluídas (VSM)</span>
           <button class="btn" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.prodExport()" data-tip="Baixa em Excel (CSV) a tabela de parceiros produtivos com os filtros atuais aplicados.">Exportar Excel</button>
         </div>
-        <div class="bd"><div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div></div>
+        <div class="bd">
+          <div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div>
+          <div class="statgrid prod-estados" id="prod-uf" title="Parceiros produtivos por estado — clique para filtrar a tabela"></div>
+        </div>
       </div>
 
-      <div class="prod-grid">
-        <aside class="card prod-ufcard">
-          <div class="hd"><h2>Parceiros produtivos por estado${infoIco("Quantos parceiros com vendas há em cada estado (mesma distribuição geográfica por UF do Mapa). Clique num estado para filtrar a tabela; clique de novo para limpar.", "Por estado")}</h2></div>
-          <div class="bd" id="prod-uf"></div>
-        </aside>
-
-        <section class="card prod-tablecard">
-          <div class="hd">
-            <h2 id="prod-tt">Ranking de parceiros</h2>
-            <div class="prod-filtros">
-              <select id="prod-f-uf" onchange="App.prodFiltrar('uf')" title="Filtrar por estado"></select>
-              <select id="prod-f-cidade" onchange="App.prodFiltrar()" title="Filtrar por cidade"></select>
-              <select id="prod-f-cons" onchange="App.prodFiltrar()" title="Filtrar por consultor"></select>
-              <input id="prod-f-q" type="search" placeholder="Buscar parceiro, CNPJ, ID VSM…" oninput="App.prodFiltrar()">
-              <button class="lnk" onclick="App.prodLimpar()">limpar</button>
-            </div>
+      <section class="card wide prod-tablecard">
+        <div class="hd">
+          <h2 id="prod-tt">Ranking de parceiros</h2>
+          <div class="prod-filtros">
+            <select id="prod-f-uf" onchange="App.prodFiltrar('uf')" title="Filtrar por estado"></select>
+            <select id="prod-f-cidade" onchange="App.prodFiltrar()" title="Filtrar por cidade"></select>
+            <select id="prod-f-cons" onchange="App.prodFiltrar()" title="Filtrar por consultor"></select>
+            <input id="prod-f-q" type="search" placeholder="Buscar parceiro, CNPJ, ID VSM…" oninput="App.prodFiltrar()">
+            <button class="lnk" onclick="App.prodLimpar()">limpar</button>
           </div>
-          <div class="bd" id="prod-tbl"><div class="empty">Carregando…</div></div>
-        </section>
-      </div>
+        </div>
+        <div class="bd" id="prod-tbl"><div class="empty">Carregando…</div></div>
+      </section>
 
       <details class="card wide prod-pbi">
         <summary>Funil detalhado por etapa — Power BI (pré-venda → processamento → elegível → habilitação)${infoIco("Visão complementar do funil comercial, ao vivo do Power BI. Essas etapas (pré-venda no Vivensis, processamento e elegibilidade na Starlink, antenas habilitadas) ainda não existem na base do sistema — por isso vêm direto da origem. A visão nativa acima cobre as vendas efetivamente registradas.", "Funil Power BI")}</summary>
@@ -1766,10 +1762,10 @@ const App = (() => {
     el.innerHTML = linhas.map(([uf, o]) => {
       const pct = maxN ? Math.round((o.n / maxN) * 100) : 0;
       const on = prodF.uf === uf ? " on" : "";
-      return `<button class="prod-ufrow${on}" onclick="App.prodUf('${esc(uf)}')" title="${o.n} parceiro(s) · ${o.v} venda(s)">
-        <span class="pu-uf">${esc(uf)}</span>
+      return `<button class="stat prod-ufcard${on}" onclick="App.prodUf('${esc(uf)}')" title="${o.n} parceiro(s) · ${o.v} venda(s) — clique para filtrar">
+        <div class="pu-head"><span class="pu-uf">${esc(uf)}</span><span class="v">${o.n}</span></div>
+        <div class="l">Parceiros produtivos</div>
         <span class="pu-bar"><i style="width:${pct}%"></i></span>
-        <span class="pu-n">${o.n}</span>
       </button>`;
     }).join("");
   }

@@ -543,8 +543,6 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 /* ---------- Produtividade dos parceiros (visão nativa + Power BI secundário) ---------- */
 .view-produtividade{display:flex;flex-direction:column;gap:14px}
 .view-produtividade .card.wide{width:100%}
-.prod-grid{display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start}
-@media(max-width:900px){.prod-grid{grid-template-columns:1fr}}
 /* pódio top 3 de vendas — encaixa na mesma statgrid (2 linhas x 4 colunas) */
 .stat.podium-card{display:flex;align-items:center;gap:9px;position:relative;overflow:hidden}
 .podium-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
@@ -560,16 +558,18 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .podium-nome{font-size:12.5px;font-weight:700;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
 .podium-sub{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
 
-/* distribuição por estado (mesma leitura por UF do Mapa) */
-.prod-ufcard .bd{display:flex;flex-direction:column;gap:5px;max-height:560px;overflow:auto}
-.prod-ufrow{display:flex;align-items:center;gap:9px;width:100%;background:none;border:1px solid transparent;border-radius:8px;padding:6px 8px;text-align:left}
-.prod-ufrow:hover{background:var(--soft)}
-.prod-ufrow.on{background:var(--accent-weak);border-color:var(--accent)}
-.prod-ufrow .pu-uf{font-weight:700;width:30px;flex:none;color:var(--brand)}
-[data-theme="dark"] .prod-ufrow .pu-uf{color:var(--accent)}
-.prod-ufrow .pu-bar{flex:1;height:8px;background:var(--line);border-radius:5px;overflow:hidden}
-.prod-ufrow .pu-bar i{display:block;height:100%;background:var(--accent);border-radius:5px}
-.prod-ufrow .pu-n{font-family:var(--fnum);font-weight:700;width:34px;text-align:right;flex:none}
+/* distribuição por estado — 3ª linha de cards (mesmo padrão da statgrid), clicável p/ filtrar */
+.prod-estados{margin-top:12px}
+.prod-estados:empty{display:none}
+.stat.prod-ufcard{text-align:left;cursor:pointer;transition:background .12s,border-color .12s}
+.stat.prod-ufcard:hover{background:var(--panel);border-color:var(--accent)}
+.stat.prod-ufcard.on{background:var(--accent-weak);border-color:var(--accent)}
+.prod-ufcard .pu-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.prod-ufcard .pu-uf{font-weight:800;font-size:15px;color:var(--brand)}
+[data-theme="dark"] .prod-ufcard .pu-uf{color:var(--accent)}
+.prod-ufcard .pu-head .v{font-family:var(--fnum);font-size:22px;font-weight:700}
+.prod-ufcard .pu-bar{display:block;height:6px;background:var(--line);border-radius:5px;overflow:hidden;margin-top:8px}
+.prod-ufcard .pu-bar i{display:block;height:100%;background:var(--accent);border-radius:5px}
 
 /* filtros da tabela */
 .prod-filtros{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-left:auto}
