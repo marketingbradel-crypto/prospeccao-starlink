@@ -408,7 +408,9 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .fu-grupo-sub{color:var(--muted);font-size:11.5px;margin-top:2px}
 .fu-toolbar{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:10px 16px;margin:2px 0 10px}
 .fu-filtro{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted)}
-.fu-filtro select{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
+.fu-filtro select,.fu-filtro input{padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
+.fu-filtro input{min-width:150px}
+.fu-filtro input:focus{outline:none;border-color:var(--accent)}
 .fu-busca-wrap{margin-right:auto}
 .fu-busca{padding:5px 9px;min-width:200px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);font-size:12.5px}
 .fu-busca:focus{outline:none;border-color:var(--accent)}

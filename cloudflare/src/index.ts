@@ -2025,7 +2025,7 @@ app.get("/api/follow-up", async (c) => {
   const sql =
     `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
             telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
-            data_ultimo_contato, faixa_potencial, origem_contato,
+            data_ultimo_contato, faixa_potencial, origem_contato, cnpj, id_vsm,
             pendencia_vsm, pendencia_cadastro, pendencia_cadastro_obs,
             ja_vendeu, vendas_vsm, instalacoes_vsm
        FROM empresas` + (carteira ? ` WHERE responsavel=?` : ``);
@@ -2045,6 +2045,8 @@ app.get("/api/follow-up", async (c) => {
       data_ultimo_contato: String(r.data_ultimo_contato || "").slice(0, 10),
       faixa_potencial: r.faixa_potencial || "",
       origem_contato: r.origem_contato || "",
+      cnpj: r.cnpj || "",
+      id_vsm: r.id_vsm || "",
       pendencia_vsm: r.pendencia_vsm || "",
       pendencia_cadastro: r.pendencia_cadastro || "",
       pendencia_cadastro_obs: r.pendencia_cadastro_obs || "",

@@ -26,6 +26,8 @@ const App = (() => {
   let fuVendeu = "";       // filtro "fez venda": "" todos, "1" sim, "0" não
   let fuFaixa = "";        // filtro de faixa de potencial/volume ("" = todas)
   let fuPend = "";         // filtro de pendência VSM: "" todas, "treinar", "contrato", "sem"
+  let fuCnpj = "";         // filtro por CNPJ (aceita com ou sem pontuação; match por dígitos)
+  let fuIdVsm = "";        // filtro por ID VSM (identificador exato)
   let fuBusca = "";        // busca por nome da empresa no follow-up ("" = sem filtro)
   let ME = null;           // usuário logado (/api/me): { username, admin, must_change, responsavel }
   let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
@@ -1766,6 +1768,18 @@ const App = (() => {
     renderFollowUpRows();
   }
 
+  // CNPJ e ID VSM são campos de digitação: re-renderizam só a lista (como a busca),
+  // preservando foco/cursor. CNPJ casa por dígitos (ignora pontuação); ID VSM por
+  // identificador exato.
+  function fuBuscarCnpj(v) {
+    fuCnpj = v || "";
+    renderFollowUpRows();
+  }
+  function fuBuscarIdVsm(v) {
+    fuIdVsm = v || "";
+    renderFollowUpRows();
+  }
+
   function renderFollowUp() {
     const box = $("fu-body");
     const d = FU;
@@ -1815,6 +1829,14 @@ const App = (() => {
         ${sel("fu-vendeu", "Fez venda", fuVendeu, [{ v: "1", t: "Sim" }, { v: "0", t: "Não" }])}
         ${sel("fu-pend", "Pendência VSM", fuPend, [{ v: "treinar", t: "Falta treinar" }, { v: "contrato", t: "Falta assinar contrato" }, { v: "sem", t: "Sem pendência" }])}
         ${sel("fu-faixa", "Potencial", fuFaixa, faixas)}
+        <label class="fu-filtro">CNPJ
+          <input id="fu-cnpj" type="search" placeholder="Com ou sem pontuação"
+                 value="${esc(fuCnpj)}" oninput="App.fuBuscarCnpj(this.value)" autocomplete="off">
+        </label>
+        <label class="fu-filtro">ID VSM
+          <input id="fu-idvsm" type="search" placeholder="Identificador"
+                 value="${esc(fuIdVsm)}" oninput="App.fuBuscarIdVsm(this.value)" autocomplete="off">
+        </label>
       </div>`;
   }
 
@@ -1845,6 +1867,17 @@ const App = (() => {
         if (fuPend === "sem" && !(p.includes("sem pend"))) return false;
       }
       if (fuOrigem) { const o = origemInfo(x.origem_contato); if (!o || o.label !== fuOrigem) return false; }
+      if (fuCnpj) {
+        // CNPJ casa por dígitos: ignora pontos/barra/traço tanto do filtro quanto do
+        // cadastro, então "12.345" acha "12345678000190".
+        const alvo = String(x.cnpj || "").replace(/\D/g, "");
+        const q = fuCnpj.replace(/\D/g, "");
+        if (!q || !alvo.includes(q)) return false;
+      }
+      if (fuIdVsm) {
+        // ID VSM: identificador exato (sem diferenciar maiúsculas/espaços nas pontas).
+        if (String(x.id_vsm || "").trim().toLowerCase() !== fuIdVsm.trim().toLowerCase()) return false;
+      }
       return true;
     };
     const corpo = FU_GRUPOS.map(g => {
@@ -2921,7 +2954,7 @@ const App = (() => {
     apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
-    varreduraAgora, fuFiltrar, fuBuscar,
+    varreduraAgora, fuFiltrar, fuBuscar, fuBuscarCnpj, fuBuscarIdVsm,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     navToggle,
