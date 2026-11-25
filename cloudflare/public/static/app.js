@@ -277,6 +277,8 @@ const App = (() => {
     // Aba Gerencial: só aparece para quem tem permissão (admin sempre tem).
     const temGer = !!(ME.perm_gerencial || ME.admin);
     if ($("tab-gerencial")) $("tab-gerencial").hidden = !temGer;
+    // Aba Conciliação: mesmo acesso do Gerencial (admin ou permissão gerencial).
+    if ($("tab-concil")) $("tab-concil").hidden = !temGer;
     // Follow-up abre filtrado pela carteira do usuário (quem é geral vê tudo: "").
     if (fuResp === null) fuResp = ME.responsavel || "";
     if (ME.must_change) forcarPrimeiroAcesso();
@@ -1427,9 +1429,11 @@ const App = (() => {
   function view(v) {
     // Bloqueio de acesso à aba Gerencial (defesa em profundidade: estado/URL).
     if (v === "gerencial" && !(ME && (ME.perm_gerencial || ME.admin))) v = "mapa";
-    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec", gerencial: "view-gerencial" };
+    // Conciliação: mesmo acesso do Gerencial (admin ou permissão gerencial).
+    if (v === "concil" && !(ME && (ME.perm_gerencial || ME.admin))) v = "mapa";
+    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec", gerencial: "view-gerencial", concil: "view-concil" };
     Object.entries(views).forEach(([k, id]) => { const el = $(id); if (el) el.classList.toggle("hidden", k !== v); });
-    ["mapa", "painel", "followup", "prospec", "gerencial"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
+    ["mapa", "painel", "followup", "prospec", "gerencial", "concil"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
     // Barra de KPIs: filtrada no Mapa (acompanha a lista), global nas demais abas.
     if (v === "painel") renderPainel();        // renderPainel já repinta a barra (global)
     else if (v === "mapa") renderKPIs();       // DASH já está filtrado
@@ -1437,6 +1441,7 @@ const App = (() => {
     if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
     if (v === "gerencial") carregarGerencial();
+    if (v === "concil") carregarConciliacao();
     fecharNav();  // fecha o menu móvel ao trocar de aba
   }
 
@@ -2947,6 +2952,99 @@ const App = (() => {
     clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("on"), 2600);
   }
 
+  // ==================== CONCILIAÇÃO (fila de duplicatas) ====================
+  const SINAL_ROT = {
+    cnpj: "CNPJ igual", id_vsm: "ID VSM igual", nome: "nome parecido",
+    nome_fantasia: "nome fantasia igual", telefone: "telefone igual",
+    cidade: "mesma cidade", uf: "mesma UF", email: "e-mail igual",
+  };
+  function concilBadges(sinais) {
+    return Object.keys(sinais || {}).filter(k => sinais[k])
+      .map(k => `<span class="concil-sig">${esc(SINAL_ROT[k] || k)}</span>`).join("");
+  }
+  function concilFichaHTML(e, rotulo) {
+    if (!e) return `<div class="concil-ficha vazia">ficha removida</div>`;
+    const linha = (lb, v) => v ? `<div><span class="cl">${lb}:</span> ${esc(String(v))}</div>` : "";
+    return `<div class="concil-ficha">
+      <div class="concil-ficha-hd"><b>${rotulo}</b> · <a class="lnk" onclick="App.abrirFicha(${e.id})">#${e.id} ${esc(e.codigo || "")}</a></div>
+      <div class="concil-ficha-nm">${esc(e.razao_social || e.nome_fantasia || "(sem nome)")}</div>
+      ${linha("Fantasia", e.nome_fantasia && e.nome_fantasia !== e.razao_social ? e.nome_fantasia : "")}
+      ${linha("CNPJ", e.cnpj)}
+      ${linha("ID VSM", e.id_vsm)}
+      ${linha("Cidade/UF", [e.cidade, e.uf].filter(Boolean).join("/"))}
+      ${linha("Telefone", e.telefone_comercial || e.whatsapp)}
+      ${linha("E-mail", e.email_comercial)}
+      ${linha("Origem", e.origem_contato)}
+      ${linha("Status", e.status)}
+    </div>`;
+  }
+  async function carregarConciliacao() {
+    const alvo = $("view-concil"); if (!alvo) return;
+    alvo.innerHTML = `<section class="card"><div class="bd"><div class="empty">Carregando fila de conciliação…</div></div></section>`;
+    let itens = [];
+    try { const r = await fetch("/api/conciliacao"); itens = r.ok ? await r.json() : []; } catch (e) {}
+    const cards = itens.map(it => {
+      const conf = it.confianca === "alta" ? "alta" : "media";
+      const a = it.empresa_a, b = it.empresa_b;
+      return `<div class="concil-card conf-${conf}">
+        <div class="concil-hd">
+          <span class="concil-conf ${conf}">${conf === "alta" ? "Alta confiança" : "Revisar"}</span>
+          <span class="concil-score">score ${Math.round(it.score)}</span>
+          <span class="concil-origem">${it.origem_deteccao === "varredura" ? "varredura" : "import"}</span>
+          <span class="concil-sigs">${concilBadges(it.sinais)}</span>
+        </div>
+        <div class="concil-par">
+          ${concilFichaHTML(a, "Mestre sugerido")}
+          <div class="concil-seta">←</div>
+          ${concilFichaHTML(b, "Absorvido")}
+        </div>
+        <div class="concil-acoes">
+          <button class="btn primary" onclick="App.concilAprovar(${it.id}, ${it.mestre_sugerido})">Fundir (manter #${it.mestre_sugerido})</button>
+          <button class="btn ghost" onclick="App.concilAprovar(${it.id}, ${it.absorvido_sugerido})" data-tip="Inverte: mantém a outra ficha como mestre.">Inverter: manter #${it.absorvido_sugerido}</button>
+          <button class="btn ghost danger" onclick="App.concilRejeitar(${it.id})" data-tip="Não são o mesmo parceiro: não volta a aparecer na fila.">Não é duplicata</button>
+        </div>
+      </div>`;
+    }).join("");
+    alvo.innerHTML = `
+      <section class="card">
+        <div class="hd">
+          <h2>Conciliação de parceiros duplicados</h2>
+          <span class="map-ctx">Pares prováveis de serem o mesmo parceiro (Formulário × VSM). Aprovar funde as duas fichas numa só, preservando histórico; rejeitar marca que são parceiros distintos.</span>
+        </div>
+        <div class="bd">
+          <div class="concil-bar">
+            <button class="btn ghost" onclick="App.concilVarredura()" data-tip="Varre a base atual em busca de duplicatas e preenche esta fila.">Rodar varredura na base</button>
+            <span class="concil-count">${itens.length} ${itens.length === 1 ? "par pendente" : "pares pendentes"}</span>
+          </div>
+          <div class="concil-lista">${cards || '<div class="empty">Nenhum par pendente. Rode a varredura para procurar duplicatas na base.</div>'}</div>
+        </div>
+      </section>`;
+  }
+  async function concilAprovar(cid, masterId) {
+    if (!confirm("Fundir as duas fichas numa só (mantendo #" + masterId + ")? A outra ficha é absorvida e removida; o histórico é preservado.")) return;
+    const r = await fetch("/api/conciliacao/" + cid + "/aprovar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ master_id: masterId }),
+    });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(js.erro || "Não foi possível fundir."); return; }
+    toast("Fichas fundidas."); await carregarConciliacao(); recarregar();
+  }
+  async function concilRejeitar(cid) {
+    const obs = prompt("Por que não são o mesmo parceiro? (opcional)") || "";
+    const r = await fetch("/api/conciliacao/" + cid + "/rejeitar", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ obs }),
+    });
+    if (!r.ok) { const js = await r.json().catch(() => ({})); toast(js.erro || "Falha ao rejeitar."); return; }
+    toast("Marcado como não-duplicata."); await carregarConciliacao();
+  }
+  async function concilVarredura() {
+    toast("Varrendo a base…");
+    const r = await fetch("/api/conciliacao/varredura", { method: "POST" });
+    const js = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(js.erro || "Falha na varredura."); return; }
+    toast((js.criados || 0) + " novo(s) par(es) encontrado(s)."); await carregarConciliacao();
+  }
+
   return {
     init, view, ufMudou, limparFiltros, buscaDebounced, tema,
     abrirFicha, novaEmpresa, editarFicha, verFicha, fecharDrawer, salvar, setStatus, aplicarFaixaSugerida, desbloquearCampo,
@@ -2962,6 +3060,7 @@ const App = (() => {
     toggleGerencial, gerPreset, gerCustom, gerToggleColab, gerTodosColab,
     setPapel, abrirMinhasSessoes, logoutAll, abrirSeguranca, segAba, segRevogar,
     abrirBackup, backupAgora, backupExcluir, backupRestaurar,
+    carregarConciliacao, concilAprovar, concilRejeitar, concilVarredura,
   };
 })();
 

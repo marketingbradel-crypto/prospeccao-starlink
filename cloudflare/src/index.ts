@@ -409,6 +409,97 @@ function acharPendente(p: PendIdx, data: Row): Row | null {
   return null;
 }
 
+// --------------------------------------------------------------------------
+// Conciliacao inteligente: matcher com nivel de confianca
+// --------------------------------------------------------------------------
+// A trava anti-duplicata acima so decide SIM/NAO por chave (CNPJ/ID VSM/nome+
+// cidade). Para a fila de conciliacao precisamos de um SCORE: quando nao ha
+// chave decisiva, somamos sinais fracos (nome parecido, telefone, cidade, UF,
+// e-mail) e classificamos a confianca. Nome sozinho NUNCA basta (regra da Luisa).
+// Pesos (somam 100 no caso ideal sem chave):
+const PESO = { nome: 34, nomeFantasia: 10, telefone: 30, cidade: 14, uf: 6, email: 20 };
+// Abaixo de MEDIA_MIN a correspondencia e fraca demais: nao vira candidato.
+const CONCIL_MEDIA_MIN = 45;
+
+// Tokens significativos de uma razao/nome para comparacao: normaliza, remove
+// pontuacao e descarta sufixos/ruidos societarios ("COMERCIAL SILVA LTDA ME" ->
+// {comercial, silva}). Usado so na pontuacao fraca (nao na chave decisiva).
+const STOP_RAZAO = new Set([
+  "ltda", "me", "epp", "eireli", "sa", "s", "a", "cia", "mei", "eir",
+  "comercio", "comercial", "servicos", "servico", "e", "de", "da", "do", "dos", "das",
+]);
+function tokensNome(s: any): Set<string> {
+  const base = L.norm(String(s ?? "")).replace(/[^a-z0-9 ]+/g, " ");
+  const toks = base.split(/\s+/).filter((t) => t.length >= 2 && !STOP_RAZAO.has(t));
+  return new Set(toks);
+}
+// Similaridade de Jaccard entre dois conjuntos de tokens (0..1).
+function similaridade(a: any, b: any): number {
+  const ta = tokensNome(a), tb = tokensNome(b);
+  if (!ta.size || !tb.size) return 0;
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter += 1;
+  return inter / (ta.size + tb.size - inter);
+}
+// Todos os telefones de uma ficha (comercial/whatsapp/responsavel) como digitos.
+function telefonesDe(e: Row): Set<string> {
+  const s = new Set<string>();
+  for (const k of ["telefone_comercial", "whatsapp", "resp_whatsapp", "resp_telefone"]) {
+    const d = soDigitos(e[k]); if (d.length >= 10) s.add(d);
+  }
+  return s;
+}
+
+type Sinais = Record<string, boolean>;
+type Pontuacao = { score: number; sinais: Sinais; decisivo: boolean };
+
+// Pontua a correspondencia entre duas fichas. `decisivo` = chave inquestionavel
+// (mesmo CNPJ ou mesmo ID VSM normalizado) -> funde automatico. Caso contrario o
+// score soma sinais fracos e `decisivo=false` -> candidato para revisao manual.
+// ID VSM divergente dos dois lados zera tudo (filiais sao cadastros distintos).
+function pontuarMatch(a: Row, b: Row): Pontuacao {
+  const sinais: Sinais = {};
+  if (idVsmConflita(a.id_vsm, b.id_vsm)) return { score: 0, sinais, decisivo: false };
+
+  const cnA = soDigitos(a.cnpj ?? a.cnpj_norm), cnB = soDigitos(b.cnpj ?? b.cnpj_norm);
+  if (cnA && cnA === cnB) { sinais.cnpj = true; return { score: 100, sinais, decisivo: true }; }
+  const vA = normIdVsm(a.id_vsm), vB = normIdVsm(b.id_vsm);
+  if (vA && vA === vB) { sinais.id_vsm = true; return { score: 100, sinais, decisivo: true }; }
+
+  // Sem chave decisiva: soma sinais fracos.
+  let score = 0;
+  // Nome: razao x razao, mas tambem cruzado razao x nome_fantasia (o form guarda
+  // a razao "COMERCIAL SILVA LTDA" e o VSM o fantasia "SILVA COMERCIO").
+  const simNome = Math.max(
+    similaridade(a.razao_social, b.razao_social),
+    similaridade(a.razao_social, b.nome_fantasia),
+    similaridade(a.nome_fantasia, b.razao_social),
+    similaridade(a.nome_fantasia, b.nome_fantasia),
+  );
+  if (simNome >= 0.6) { sinais.nome = true; score += PESO.nome * Math.min(1, simNome); }
+
+  const fA = L.norm(String(a.nome_fantasia ?? "")), fB = L.norm(String(b.nome_fantasia ?? ""));
+  if (fA && fA === fB) { sinais.nome_fantasia = true; score += PESO.nomeFantasia; }
+
+  const telA = telefonesDe(a), telB = telefonesDe(b);
+  for (const t of telA) if (telB.has(t)) { sinais.telefone = true; score += PESO.telefone; break; }
+
+  const cidA = L.norm(String(a.cidade ?? "")), cidB = L.norm(String(b.cidade ?? ""));
+  if (cidA && cidA === cidB) { sinais.cidade = true; score += PESO.cidade; }
+
+  const ufA = String(a.uf ?? "").trim().toUpperCase(), ufB = String(b.uf ?? "").trim().toUpperCase();
+  if (ufA && ufB) {
+    if (ufA === ufB) { sinais.uf = true; score += PESO.uf; }
+    else score -= PESO.uf * 2; // UF divergente afasta forte
+  }
+
+  const emA = L.norm(String(a.email_comercial ?? a.resp_email ?? ""));
+  const emB = L.norm(String(b.email_comercial ?? b.resp_email ?? ""));
+  if (emA && emA === emB) { sinais.email = true; score += PESO.email; }
+
+  return { score: Math.max(0, Math.round(score)), sinais, decisivo: false };
+}
+
 // Proximo numero de codigo REV: MAX(numero)+1. Usa o MAIOR numero existente
 // (nao o codigo da ultima linha por id), evitando codigos duplicados.
 async function proximoCodigoNum(db: D1Database): Promise<number> {
@@ -3041,7 +3132,7 @@ function linhaParaEmpresa(d: Row): Row {
 }
 
 // Resultado consolidado de um import em massa.
-type ResultadoImport = { criados: number; atualizados: number; mesclados: number; ignorados: number; erros: string[] };
+type ResultadoImport = { criados: number; atualizados: number; mesclados: number; ignorados: number; candidatos?: number; erros: string[] };
 
 // Le um arquivo (.xlsx ou .csv) em linhas-objeto da 1a planilha. Usado pelo
 // import manual (/api/import) e pela sincronizacao automatica (/api/sync/ingest).
@@ -3055,12 +3146,228 @@ function parseArquivoRegistros(buf: ArrayBuffer, nome: string): Row[] {
   return XLSX.utils.sheet_to_json<Row>(wb.Sheets[wb.SheetNames[0]], { defval: "" });
 }
 
+// --------------------------------------------------------------------------
+// Fila de conciliacao: persistencia + fusao de fichas
+// --------------------------------------------------------------------------
+// Tabela criada sob demanda (mesmo padrao de ensureSyncRuns): resiliente a
+// migracao 0021 nao aplicada no remoto.
+let concilPronta = false;
+async function ensureConcil(db: D1Database): Promise<void> {
+  if (concilPronta) return;
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS conciliacao_candidatos (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       empresa_a INTEGER NOT NULL, empresa_b INTEGER NOT NULL,
+       par_chave TEXT NOT NULL, score REAL DEFAULT 0, confianca TEXT, sinais TEXT,
+       status TEXT NOT NULL DEFAULT 'pendente', origem_deteccao TEXT, criado_em TEXT,
+       decidido_por TEXT, decidido_em TEXT, decisao_obs TEXT)`
+  ).run();
+  await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_concil_par ON conciliacao_candidatos(par_chave)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_concil_status ON conciliacao_candidatos(status)").run();
+  concilPronta = true;
+}
+
+// Chave canonica de um par (independe da ordem): dedup via UNIQUE(par_chave).
+function parChave(a: number, b: number): string {
+  return `${Math.min(a, b)}-${Math.max(a, b)}`;
+}
+
+// Mestre SUGERIDO entre duas fichas: preserva o registro do Formulario (id interno
+// permanente do 1o contato). Preferencia: origem "Formulario" > ficha SEM id_vsm
+// (lado do form) > id menor (mais antiga). O outro vira o absorvido.
+function sugerirMestre(a: Row, b: Row): { master: number; victim: number } {
+  const idA = Number(a.id), idB = Number(b.id);
+  const formA = String(a.origem_contato ?? "") === "Formulário";
+  const formB = String(b.origem_contato ?? "") === "Formulário";
+  if (formA !== formB) return formA ? { master: idA, victim: idB } : { master: idB, victim: idA };
+  const vsmA = !!normIdVsm(a.id_vsm), vsmB = !!normIdVsm(b.id_vsm);
+  if (vsmA !== vsmB) return vsmA ? { master: idB, victim: idA } : { master: idA, victim: idB };
+  return idA <= idB ? { master: idA, victim: idB } : { master: idB, victim: idA };
+}
+
+// Enfileira um candidato (fichas EXISTENTES). INSERT OR IGNORE por par_chave:
+// o mesmo par nunca enfileira 2x. Pula pares ja decididos (aprovado/rejeitado/
+// obsoleto) para nao ressurgir um par que o admin ja resolveu. Retorna se criou.
+async function enfileirarCandidato(
+  db: D1Database, a: Row, b: Row, pont: Pontuacao, origem: "import" | "varredura"
+): Promise<boolean> {
+  await ensureConcil(db);
+  const idA = Number(a.id), idB = Number(b.id);
+  if (!idA || !idB || idA === idB) return false;
+  const chave = parChave(idA, idB);
+  const ja = await db.prepare("SELECT status FROM conciliacao_candidatos WHERE par_chave=?").bind(chave).first<Row>();
+  if (ja) return false; // ja existe (pendente ou ja decidido): nao recria
+  const { master, victim } = sugerirMestre(a, b);
+  const confianca = pont.decisivo ? "alta" : "media";
+  const res = await db.prepare(
+    `INSERT OR IGNORE INTO conciliacao_candidatos
+       (empresa_a,empresa_b,par_chave,score,confianca,sinais,status,origem_deteccao,criado_em)
+     VALUES (?,?,?,?,?,?, 'pendente', ?, ?)`
+  ).bind(master, victim, chave, pont.score, confianca, JSON.stringify(pont.sinais), origem, agora()).run();
+  return !!(res as any)?.meta?.changes;
+}
+
+// Funde a ficha `victimId` na `masterId` (chaveado por id). Nao-destrutivo com
+// PROMOCAO: o mestre (tipicamente a ficha do Formulario) herda o ID VSM e, quando
+// o absorvido e de origem VSM, os campos CADASTRAIS oficiais do VSM VENCEM em
+// divergencia; os demais campos so preenchem lacuna. Move contatos/filiais,
+// guarda um snapshot JSON da ficha absorvida na auditoria e remove o absorvido.
+async function fundirEmpresas(c: any, masterId: number, victimId: number): Promise<void> {
+  if (masterId === victimId) throw new Error("Mestre e absorvido sao a mesma ficha.");
+  const db: D1Database = c.env.DB;
+  const master = await db.prepare("SELECT * FROM empresas WHERE id=?").bind(masterId).first<Row>();
+  const victim = await db.prepare("SELECT * FROM empresas WHERE id=?").bind(victimId).first<Row>();
+  if (!master) throw new Error(`Ficha mestre ${masterId} nao encontrada.`);
+  if (!victim) throw new Error(`Ficha ${victimId} nao encontrada.`);
+  if (idVsmConflita(master.id_vsm, victim.id_vsm)) {
+    throw new Error("As duas fichas tem ID VSM diferentes (cadastros distintos) — nao podem ser fundidas.");
+  }
+
+  // Snapshot da ficha absorvida ANTES de qualquer mudanca: nada se perde.
+  await registrarAuditoria(c, {
+    acao: "empresa_fundida", origem: "sistema",
+    empresa_id: masterId, empresa_nome: String(master.razao_social ?? master.nome_fantasia ?? ""),
+    alvo_id: victimId, campo: `absorveu ${victimId}`, antes: JSON.stringify(victim),
+    depois: `mestre ${masterId}`,
+  });
+
+  const victimEhVSM = String(victim.origem_contato ?? "") === "VSM" || !!normIdVsm(victim.id_vsm);
+  const masterEhForm = String(master.origem_contato ?? "") === "Formulário" || !normIdVsm(master.id_vsm);
+  const vsmPromove = victimEhVSM && masterEhForm;
+  const PULAR = new Set(["id", "codigo", "criado_em", "atualizado_em", "cnpj_norm"]);
+
+  const e: Row = {};
+  // ID VSM: o mestre herda o do absorvido se ainda nao tiver.
+  if (estaVazio(master.id_vsm) && !estaVazio(victim.id_vsm)) e.id_vsm = victim.id_vsm;
+
+  for (const k of Object.keys(victim)) {
+    if (PULAR.has(k) || k === "id_vsm") continue;
+    const vv = victim[k];
+    if (estaVazio(vv)) continue;
+    // Observacoes: concatena (nao perde anotacoes de nenhum dos lados).
+    if (k === "observacoes") {
+      const mo = String(master.observacoes ?? "").trim(), vo = String(vv).trim();
+      if (mo && vo && mo !== vo) e.observacoes = `${mo}\n— (conciliado da ficha ${victimId}) —\n${vo}`;
+      else if (!mo && vo) e.observacoes = vo;
+      continue;
+    }
+    // Campo CADASTRAL e o absorvido e VSM promovendo um form: VSM vence divergencia.
+    if (CAMPOS_CADASTRAIS_PLANILHA.has(k) && vsmPromove) {
+      if (String(master[k] ?? "") !== String(vv ?? "")) e[k] = vv;
+      continue;
+    }
+    // Demais campos (e cadastrais sem promocao): nao-destrutivo, so preenche lacuna.
+    if (estaVazio(master[k])) e[k] = vv;
+  }
+  // cnpj_norm acompanha um cnpj herdado.
+  if (!estaVazio(e.cnpj)) e.cnpj_norm = soDigitos(e.cnpj);
+  // Microrregiao reavaliada se cidade/UF mudaram.
+  if ("cidade" in e || "uf" in e) {
+    const muni = String(e.cidade ?? master.cidade ?? "");
+    const uf = String(e.uf ?? master.uf ?? "").toUpperCase();
+    const mr = muni ? geo.microrregiaoDe(muni, uf || null) : null;
+    if (mr && mr !== String(master.microrregiao ?? "")) e.microrregiao = mr;
+  }
+  if (Object.keys(e).length) { e.atualizado_em = agora(); await atualizarEmpresa(db, masterId, e); }
+
+  // Move os filhos (so estas tabelas tem empresa_id). Auditoria NAO e reassociada
+  // (historico append-only, ja guarda o snapshot acima).
+  await db.prepare("UPDATE contatos SET empresa_id=? WHERE empresa_id=?").bind(masterId, victimId).run();
+  await db.prepare("UPDATE filiais  SET empresa_id=? WHERE empresa_id=?").bind(masterId, victimId).run();
+  // Remove o absorvido.
+  await db.prepare("DELETE FROM empresas WHERE id=?").bind(victimId).run();
+}
+
+// Varredura da base atual: compara pares por bucket (CNPJ / ID VSM / nome+UF+
+// cidade) para evitar O(n^2) cego e enfileira duplicatas como candidatos. NUNCA
+// funde sozinha (cuidado de implantacao: nao excluir fichas existentes automatico).
+async function varrerConciliacao(db: D1Database): Promise<{ criados: number; avaliados: number }> {
+  await ensureConcil(db);
+  const { results } = await db
+    .prepare("SELECT id, codigo, razao_social, nome_fantasia, cnpj, cnpj_norm, id_vsm, telefone_comercial, whatsapp, resp_whatsapp, resp_telefone, cidade, uf, email_comercial, resp_email, origem_contato FROM empresas")
+    .all<Row>();
+  const fichas = results ?? [];
+
+  // Buckets: so comparamos fichas que compartilham algum sinal (CNPJ, ID VSM,
+  // telefone, ou um token de nome dentro da MESMA UF). Cobre os mesmos sinais do
+  // matcher do import (melhorCandidatoScore): sem telefone/token o par C/D de
+  // "NORTE TELECOM" x "NORTE TELECOMUNICACOES" nunca seria comparado.
+  const buckets = new Map<string, Row[]>();
+  const add = (k: string, r: Row) => { if (!k) return; let g = buckets.get(k); if (!g) { g = []; buckets.set(k, g); } g.push(r); };
+  for (const r of fichas) {
+    const cn = soDigitos(r.cnpj ?? r.cnpj_norm); if (cn) add(`c:${cn}`, r);
+    const v = normIdVsm(r.id_vsm); if (v) add(`v:${v}`, r);
+    for (const t of telefonesDe(r)) add(`t:${t}`, r);
+    const uf = String(r.uf ?? "").toUpperCase();
+    for (const t of [...tokensNome(r.razao_social), ...tokensNome(r.nome_fantasia)]) add(`n:${t}|${uf}`, r);
+  }
+
+  const vistos = new Set<string>();
+  let criados = 0, avaliados = 0;
+  const avaliarPar = async (a: Row, b: Row) => {
+    const chave = parChave(Number(a.id), Number(b.id));
+    if (Number(a.id) === Number(b.id) || vistos.has(chave)) return;
+    vistos.add(chave);
+    avaliados += 1;
+    const pont = pontuarMatch(a, b);
+    if (!pont.decisivo && pont.score < CONCIL_MEDIA_MIN) return;
+    if (await enfileirarCandidato(db, a, b, pont, "varredura")) criados += 1;
+  };
+  for (const grupo of buckets.values()) {
+    if (grupo.length < 2) continue;
+    for (let i = 0; i < grupo.length; i++)
+      for (let j = i + 1; j < grupo.length; j++)
+        await avaliarPar(grupo[i], grupo[j]);
+  }
+  return { criados, avaliados };
+}
+
+// Indice em memoria para a PONTUACAO no import: guarda as fichas existentes com
+// os campos de scoring e buckets por telefone e por token-de-nome+UF, para achar
+// candidatos PROVAVEIS (sem chave decisiva) sem varrer a base inteira por linha.
+type IndiceScore = { fichas: Map<number, Row>; byTel: Map<string, Set<number>>; byNomeUf: Map<string, Set<number>> };
+function idxScorePush(m: Map<string, Set<number>>, k: string, id: number): void {
+  if (!k) return; let s = m.get(k); if (!s) { s = new Set(); m.set(k, s); } s.add(id);
+}
+function idxScoreAdd(s: IndiceScore, r: Row): void {
+  const id = Number(r.id); if (!id) return;
+  s.fichas.set(id, r);
+  for (const t of telefonesDe(r)) idxScorePush(s.byTel, t, id);
+  const uf = String(r.uf ?? "").toUpperCase();
+  for (const t of [...tokensNome(r.razao_social), ...tokensNome(r.nome_fantasia)]) idxScorePush(s.byNomeUf, `${t}|${uf}`, id);
+}
+async function carregarIndiceScore(db: D1Database): Promise<IndiceScore> {
+  const s: IndiceScore = { fichas: new Map(), byTel: new Map(), byNomeUf: new Map() };
+  const { results } = await db.prepare(
+    "SELECT id,razao_social,nome_fantasia,cnpj,cnpj_norm,id_vsm,telefone_comercial,whatsapp,resp_whatsapp,resp_telefone,cidade,uf,email_comercial,resp_email,origem_contato FROM empresas"
+  ).all<Row>();
+  for (const r of results ?? []) idxScoreAdd(s, r);
+  return s;
+}
+// Melhor candidato MEDIO existente para `data` (os DECISIVOS ja foram pegos por
+// acharDupIndice antes). null se nenhum alcanca o limiar de confianca.
+function melhorCandidatoScore(s: IndiceScore, data: Row): { ficha: Row; pont: Pontuacao } | null {
+  const cands = new Set<number>();
+  for (const t of telefonesDe(data)) for (const id of s.byTel.get(t) ?? []) cands.add(id);
+  const uf = String(data.uf ?? "").toUpperCase();
+  for (const t of [...tokensNome(data.razao_social), ...tokensNome(data.nome_fantasia)])
+    for (const id of s.byNomeUf.get(`${t}|${uf}`) ?? []) cands.add(id);
+  let best: { ficha: Row; pont: Pontuacao } | null = null;
+  for (const id of cands) {
+    const ficha = s.fichas.get(id)!;
+    const pont = pontuarMatch(data, ficha);
+    if (pont.decisivo || pont.score < CONCIL_MEDIA_MIN) continue;
+    if (!best || pont.score > best.pont.score) best = { ficha, pont };
+  }
+  return best;
+}
+
 // Nucleo do import em massa: trava anti-duplicata em 3 camadas (banco por
 // CNPJ/ID VSM/nome+UF+cidade; dedup dentro do proprio lote) + merge
 // nao-destrutivo (so preenche campo vazio; celula vazia nunca apaga dado).
 // Compartilhado pelo import manual e pela sincronizacao da pasta de rede.
 async function importarRegistros(db: D1Database, registros: Row[]): Promise<ResultadoImport> {
-  let atualizados = 0, ignorados = 0, mesclados = 0;
+  let atualizados = 0, ignorados = 0, mesclados = 0, candidatos = 0, criadosImediato = 0;
   const erros: string[] = [];
   const novos: Row[] = [];
   // Numero inicial do codigo calculado UMA vez; incrementa em memoria (evita
@@ -3071,6 +3378,9 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
   // fichas novas deste arquivo (dedup dentro do proprio lote).
   const idx = await carregarIndiceDup(db);
   const pend: PendIdx = { cnpj: new Map(), vsm: new Map(), nome: new Map() };
+  // Indice de PONTUACAO: casa candidatos provaveis (sem chave decisiva) para a
+  // fila de conciliacao. Atualizado a cada ficha criada na hora (passo 2.5).
+  const idxS = await carregarIndiceScore(db);
 
   let i = 1;
   for (const bruto of registros) {
@@ -3149,6 +3459,24 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
         continue;
       }
 
+      // 2.5) Sem chave decisiva, mas ha um candidato PROVAVEL ja na base (nome/
+      // telefone/cidade/e-mail)? NAO funde as cegas: cria a ficha (o parceiro
+      // precisa aparecer no painel) e enfileira o par para o admin revisar.
+      const cand = melhorCandidatoScore(idxS, data);
+      if (cand) {
+        const e = montarEmpresa(data, true);
+        if (!e.codigo) e.codigo = `REV-${String(proxNum++).padStart(3, "0")}`;
+        const novoId = await inserirEmpresa(db, e);
+        e.id = novoId;
+        idxScoreAdd(idxS, e);        // proximas linhas podem casar nesta
+        registrarPendente(pend, e);  // dedup dentro do proprio arquivo
+        const cn = soDigitos(e.cnpj); if (cn) idx.cnpj.set(cn, novoId);
+        const v = normIdVsm(e.id_vsm); if (v) idx.vsm.set(v, novoId);
+        if (await enfileirarCandidato(db, cand.ficha, e, cand.pont, "import")) candidatos += 1;
+        criadosImediato += 1;
+        continue;
+      }
+
       // 3) Empresa nova de fato.
       const e = montarEmpresa(data, true);
       if (!e.codigo) e.codigo = `REV-${String(proxNum++).padStart(3, "0")}`;
@@ -3159,8 +3487,8 @@ async function importarRegistros(db: D1Database, registros: Row[]): Promise<Resu
     }
   }
 
-  const criados = await inserirEmpresasLote(db, novos, erros);
-  return { criados, atualizados, mesclados, ignorados, erros };
+  const criados = criadosImediato + await inserirEmpresasLote(db, novos, erros);
+  return { criados, atualizados, mesclados, ignorados, candidatos, erros };
 }
 
 // --------------------------------------------------------------------------
@@ -3316,9 +3644,127 @@ app.post("/api/import", async (c) => {
   // produtividade humana no painel Gerencial), apenas para rastreabilidade.
   await registrarAuditoria(c, {
     acao: "import", origem: "sistema",
-    depois: `criados=${r.criados}, atualizados=${r.atualizados}, mesclados=${r.mesclados}, ignorados=${r.ignorados}`,
+    depois: `criados=${r.criados}, atualizados=${r.atualizados}, mesclados=${r.mesclados}, ignorados=${r.ignorados}, candidatos=${r.candidatos ?? 0}`,
   });
   return c.json(r);
+});
+
+// --------------------------------------------------------------------------
+// Conciliacao: fila de duplicatas candidatas (revisao manual do admin)
+// --------------------------------------------------------------------------
+// Resumo enxuto de uma ficha para os cards da fila (lado a lado).
+function fichaResumo(r: Row | null): Row | null {
+  if (!r) return null;
+  return {
+    id: r.id, codigo: r.codigo, razao_social: r.razao_social, nome_fantasia: r.nome_fantasia,
+    cnpj: r.cnpj, id_vsm: r.id_vsm, cidade: r.cidade, uf: r.uf,
+    telefone_comercial: r.telefone_comercial, whatsapp: r.whatsapp, email_comercial: r.email_comercial,
+    origem_contato: r.origem_contato, status: r.status, criado_em: r.criado_em,
+  };
+}
+
+// GET /api/conciliacao — lista os candidatos PENDENTES com as duas fichas.
+app.get("/api/conciliacao", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso à conciliação." }, 403);
+  await ensureConcil(c.env.DB);
+  const { results } = await c.env.DB.prepare(
+    "SELECT * FROM conciliacao_candidatos WHERE status='pendente' ORDER BY confianca DESC, score DESC, id DESC"
+  ).all<Row>();
+  const itens: Row[] = [];
+  for (const cand of results ?? []) {
+    const a = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(cand.empresa_a).first<Row>();
+    const b = await c.env.DB.prepare("SELECT * FROM empresas WHERE id=?").bind(cand.empresa_b).first<Row>();
+    // Par cujas fichas sumiram (ja fundidas por outra via): marca obsoleto e pula.
+    if (!a || !b) {
+      await c.env.DB.prepare("UPDATE conciliacao_candidatos SET status='obsoleto' WHERE id=?").bind(cand.id).run();
+      continue;
+    }
+    let sinais: Row = {};
+    try { sinais = JSON.parse(String(cand.sinais ?? "{}")); } catch { sinais = {}; }
+    itens.push({
+      id: cand.id, score: cand.score, confianca: cand.confianca, sinais,
+      origem_deteccao: cand.origem_deteccao, criado_em: cand.criado_em,
+      mestre_sugerido: cand.empresa_a, absorvido_sugerido: cand.empresa_b,
+      empresa_a: fichaResumo(a), empresa_b: fichaResumo(b),
+    });
+  }
+  return c.json(itens);
+});
+
+// POST /api/conciliacao/:id/aprovar — funde as duas fichas. body {master_id?}
+// permite inverter qual ficha e o mestre (default = empresa_a sugerida).
+app.post("/api/conciliacao/:id{[0-9]+}/aprovar", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso à conciliação." }, 403);
+  const cid = Number(c.req.param("id"));
+  const cand = await c.env.DB.prepare("SELECT * FROM conciliacao_candidatos WHERE id=?").bind(cid).first<Row>();
+  if (!cand) return c.json({ erro: "Candidato não encontrado." }, 404);
+  if (String(cand.status) !== "pendente") return c.json({ erro: "Este candidato já foi decidido." }, 409);
+  const a = Number(cand.empresa_a), b = Number(cand.empresa_b);
+  const d = await jsonBody(c);
+  let master = a, victim = b;
+  if (d.master_id != null) {
+    master = Number(d.master_id);
+    if (master !== a && master !== b) return c.json({ erro: "master_id deve ser uma das duas fichas do par." }, 400);
+    victim = master === a ? b : a;
+  }
+  try {
+    await fundirEmpresas(c, master, victim);
+  } catch (ex: any) {
+    return c.json({ erro: String(ex?.message ?? ex) }, 409);
+  }
+  const quem = c.get("usuario")?.username ?? null;
+  await c.env.DB.prepare(
+    "UPDATE conciliacao_candidatos SET status='aprovado', decidido_por=?, decidido_em=? WHERE id=?"
+  ).bind(quem, agora(), cid).run();
+  // Qualquer outro candidato que cite a ficha absorvida vira obsoleto (ela sumiu).
+  await c.env.DB.prepare(
+    "UPDATE conciliacao_candidatos SET status='obsoleto' WHERE status='pendente' AND (empresa_a=? OR empresa_b=?)"
+  ).bind(victim, victim).run();
+  return c.json({ ok: true, master, victim });
+});
+
+// POST /api/conciliacao/:id/rejeitar — marca que NAO sao o mesmo parceiro. body {obs?}.
+// O par rejeitado nao volta a ser enfileirado (enfileirarCandidato pula par existente).
+app.post("/api/conciliacao/:id{[0-9]+}/rejeitar", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso à conciliação." }, 403);
+  const cid = Number(c.req.param("id"));
+  const cand = await c.env.DB.prepare("SELECT status FROM conciliacao_candidatos WHERE id=?").bind(cid).first<Row>();
+  if (!cand) return c.json({ erro: "Candidato não encontrado." }, 404);
+  if (String(cand.status) !== "pendente") return c.json({ erro: "Este candidato já foi decidido." }, 409);
+  const d = await jsonBody(c);
+  const quem = c.get("usuario")?.username ?? null;
+  await c.env.DB.prepare(
+    "UPDATE conciliacao_candidatos SET status='rejeitado', decidido_por=?, decidido_em=?, decisao_obs=? WHERE id=?"
+  ).bind(quem, agora(), String(d.obs ?? "").trim() || null, cid).run();
+  return c.json({ ok: true });
+});
+
+// POST /api/conciliacao/varredura — varre a base atual e enfileira duplicatas.
+app.post("/api/conciliacao/varredura", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso à conciliação." }, 403);
+  const r = await varrerConciliacao(c.env.DB);
+  await registrarAuditoria(c, { acao: "conciliacao_varredura", origem: "sistema", depois: `candidatos=${r.criados}, avaliados=${r.avaliados}` });
+  return c.json({ ok: true, ...r });
+});
+
+// POST /api/empresas/:id/fundir — fusao manual direta (quem ja sabe o par). body {victim_id}.
+app.post("/api/empresas/:id{[0-9]+}/fundir", async (c) => {
+  if (!(await temPermGerencial(c))) return c.json({ erro: "Sem acesso à conciliação." }, 403);
+  const master = Number(c.req.param("id"));
+  const d = await jsonBody(c);
+  const victim = Number(d.victim_id);
+  if (!victim) return c.json({ erro: "Informe victim_id (a ficha a ser absorvida)." }, 400);
+  try {
+    await fundirEmpresas(c, master, victim);
+  } catch (ex: any) {
+    return c.json({ erro: String(ex?.message ?? ex) }, 409);
+  }
+  // Candidatos que citem qualquer um dos dois ids ficam obsoletos.
+  await ensureConcil(c.env.DB);
+  await c.env.DB.prepare(
+    "UPDATE conciliacao_candidatos SET status='obsoleto' WHERE status='pendente' AND (empresa_a=? OR empresa_b=? OR empresa_a=? OR empresa_b=?)"
+  ).bind(victim, victim, master, master).run();
+  return c.json({ ok: true, master, victim });
 });
 
 // --------------------------------------------------------------------------
