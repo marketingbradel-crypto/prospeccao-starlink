@@ -776,4 +776,9 @@ html,body{overflow-x:clip}
 .concil-ficha-nm{font-weight:700;font-size:13.5px;margin-bottom:6px}
 .concil-ficha .cl{color:var(--muted)}
 .concil-acoes{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+/* O estilo .btn.ghost e branco (feito p/ a barra escura do topo); no card branco
+   ele some. Aqui re-estilizamos os ghost dentro da Conciliacao p/ fundo claro. */
+.concil-bar .btn.ghost,.concil-acoes .btn.ghost{background:var(--panel);color:var(--accent);border-color:var(--line)}
+.concil-bar .btn.ghost:hover,.concil-acoes .btn.ghost:hover{background:var(--soft)}
+.concil-acoes .btn.ghost.danger{background:var(--panel);color:var(--vermelho);border-color:rgba(204,58,38,.4)}
 @media(max-width:720px){.concil-par{grid-template-columns:1fr}.concil-seta{transform:rotate(90deg)}}
