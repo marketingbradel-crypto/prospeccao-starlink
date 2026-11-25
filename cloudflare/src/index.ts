@@ -2497,6 +2497,8 @@ async function salvarCandidato(db: D1Database, idx: BaseIndex, cand: Row): Promi
     uf: (limpar(cand.uf) || "").toUpperCase(),
     latitude: cand.lat,
     longitude: cand.lng,
+    microrregiao: limpar(cand.microrregiao) || "",
+    responsavel: limpar(cand.responsavel) || "",
     origem_contato: "Prospecção ativa",
     observacoes: obs.join("\n"),
   }, true);
@@ -2601,7 +2603,12 @@ app.get("/api/busca-places", async (c) => {
     if (!cand.cidade && cidade) cand.cidade = cidade;
     if (!cand.uf && uf) cand.uf = uf;
     const dup = achaDup(idx, cand.nome, cand.cidade, cand.telefone);
-    resultados.push({ ...cand, ja_salvo: dup !== null, empresa_id: dup });
+    // Atribuicao automatica do consultor tambem na busca manual (mesma regra da varredura).
+    const terr = atribuiTerritorio(cand.cidade, cand.uf, cand.microrregiao || mr);
+    resultados.push({
+      ...cand, microrregiao: terr.microrregiao, responsavel: terr.responsavel,
+      ja_salvo: dup !== null, empresa_id: dup,
+    });
   }
 
   // Salva/atualiza no historico de pesquisas (dedup por regiao+termo).
@@ -2735,9 +2742,28 @@ async function ensurePendentes(db: D1Database): Promise<void> {
        id INTEGER PRIMARY KEY AUTOINCREMENT,
        nome TEXT, tipo TEXT, endereco TEXT, cidade TEXT, uf TEXT,
        telefone TEXT, whatsapp TEXT, site TEXT, fonte TEXT,
-       lat REAL, lng REAL, place_id TEXT, chave TEXT UNIQUE, encontrado_em TEXT)`
+       lat REAL, lng REAL, place_id TEXT, chave TEXT UNIQUE, encontrado_em TEXT,
+       microrregiao TEXT, responsavel TEXT)`
   ).run();
+  // Resiliente a tabelas criadas antes da migration 0022: adiciona as colunas de
+  // territorio/consultor se ainda nao existirem (ALTER falha silencioso se ja ha).
+  for (const col of ["microrregiao TEXT", "responsavel TEXT"]) {
+    try { await db.prepare(`ALTER TABLE varredura_pendentes ADD COLUMN ${col}`).run(); } catch { /* ja existe */ }
+  }
   pendentesPronta = true;
+}
+
+// Resolve a microrregiao (via geo) e o consultor responsavel (via listas.responsavelPara)
+// de um candidato de prospeccao. Fonte unica de verdade da distribuicao territorial:
+// excecao por microrregiao tem prioridade sobre o padrao por UF. Mesmo criterio usado
+// por montarEmpresa ao salvar na base — garante que o lead fique vinculado ao mesmo
+// consultor na fila de prospeccao e depois na ficha.
+function atribuiTerritorio(cidade?: any, uf?: any, microrregiao?: any): { microrregiao: string; responsavel: string } {
+  const u = String(uf ?? "").trim().toUpperCase();
+  let mr = String(microrregiao ?? "").trim();
+  if (!mr && cidade) mr = geo.microrregiaoDe(String(cidade), u || null) || "";
+  const responsavel = L.responsavelPara(u, mr);
+  return { microrregiao: mr, responsavel };
 }
 
 // Chave de dedup do pendente: telefone normalizado (>=8 digitos) OU nome+cidade.
@@ -2751,14 +2777,17 @@ function chavePendente(nome: string, cidade: string, telefone: string): string {
 // Retorna true se foi realmente inserido (candidato novo).
 async function inserePendente(db: D1Database, cand: Row): Promise<boolean> {
   const chave = chavePendente(cand.nome, cand.cidade, cand.telefone || "");
+  // Atribuicao automatica do consultor no momento do achado (varredura diaria OU manual).
+  const terr = atribuiTerritorio(cand.cidade, cand.uf, cand.microrregiao);
   const res = await db.prepare(
     `INSERT OR IGNORE INTO varredura_pendentes
-       (nome,tipo,endereco,cidade,uf,telefone,whatsapp,site,fonte,lat,lng,place_id,chave,encontrado_em)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+       (nome,tipo,endereco,cidade,uf,telefone,whatsapp,site,fonte,lat,lng,place_id,chave,encontrado_em,microrregiao,responsavel)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(
     cand.nome, cand.tipo || "", cand.endereco || "", cand.cidade || "", (cand.uf || "").toUpperCase(),
     cand.telefone || "", cand.whatsapp || "", cand.site || "", cand.fonte || "",
-    cand.lat ?? null, cand.lng ?? null, cand.place_id || "", chave, agora()
+    cand.lat ?? null, cand.lng ?? null, cand.place_id || "", chave, agora(),
+    terr.microrregiao, terr.responsavel
   ).run();
   return !!res.meta.changes;
 }
@@ -2771,6 +2800,7 @@ function pendenteParaCandidato(row: Row): Row {
     nome: row.nome, tipo: row.tipo, endereco: row.endereco, cidade: row.cidade, uf: row.uf,
     telefone: row.telefone, whatsapp: row.whatsapp, site: row.site, fonte: row.fonte,
     lat: row.lat, lng: row.lng, place_id: row.place_id,
+    microrregiao: row.microrregiao, responsavel: row.responsavel,
     rede, handle: rede ? handleSocial(String(row.fonte || row.site || "")) : "",
     auto: true, encontrado_em: row.encontrado_em,
   };
@@ -2900,11 +2930,24 @@ app.post("/api/prospeccao/varredura", async (c) => {
 app.get("/api/prospeccao/pendentes", async (c) => {
   await ensurePendentes(c.env.DB);
   const uf = (limpar(c.req.query("uf")) || "").toString().toUpperCase();
+  const resp = (limpar(c.req.query("responsavel")) || "").toString();
   const where = uf ? " WHERE uf=?" : "";
   const sql = `SELECT * FROM varredura_pendentes${where} ORDER BY encontrado_em DESC, id DESC`;
   const stmt = uf ? c.env.DB.prepare(sql).bind(uf) : c.env.DB.prepare(sql);
   const { results } = await stmt.all<Row>();
-  return c.json(results ?? []);
+  let linhas = results ?? [];
+  // Linhas achadas antes da 0022 nao tem consultor gravado: resolve na hora (nao
+  // persiste aqui — a proxima varredura ja grava; evita exibir lead sem consultor).
+  for (const r of linhas) {
+    if (r.responsavel == null) {
+      const t = atribuiTerritorio(r.cidade, r.uf, r.microrregiao);
+      r.microrregiao = t.microrregiao;
+      r.responsavel = t.responsavel;
+    }
+  }
+  // Filtro por consultor (combinavel com o filtro de UF).
+  if (resp) linhas = linhas.filter((r) => String(r.responsavel || "") === resp);
+  return c.json(linhas);
 });
 
 // POST /api/prospeccao/pendentes/salvar  { ids?: number[], todos?: boolean }

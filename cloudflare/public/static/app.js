@@ -18,6 +18,7 @@ const App = (() => {
   let HIST = [];           // histórico de pesquisas (metadados), por região
   let curPesquisa = null;  // id da pesquisa atualmente exibida nos resultados
   let PEND = [];           // pendentes da varredura automática (aguardando revisão)
+  let pendFiltroResp = ""; // filtro por consultor aplicado na fila de pendentes ("" = todos)
   let FU = null;           // dados do follow-up carregados (/api/follow-up)
   let fuUF = "";           // filtro de estado aplicado no follow-up ("" = todos)
   let fuResp = null;       // filtro de responsável no follow-up (null=ainda não iniciado; ""=todos)
@@ -39,6 +40,105 @@ const App = (() => {
   let gerColabs = [];        // colaboradores disponíveis (/api/gerencial/colaboradores)
   let gerSync = null;        // status da sincronização da pasta de rede (/api/sync/status)
   let gerSyncRuns = [];      // histórico de execuções da sincronização (/api/sync/runs)
+
+  // ==================== Persistência de navegação ====================
+  // Mantém a aba/sub-aba e os filtros ao atualizar a página (F5/Ctrl+R/botão do
+  // navegador). O hash da URL é a rota canônica (respeita links diretos e o
+  // refresh); o localStorage guarda a última navegação da sessão, usado quando
+  // não há hash (acesso à URL "pelada" / nova sessão).
+  const NAV_TABS = ["mapa", "painel", "followup", "prospec", "gerencial", "concil"];
+  const NAV_LS = "nav:v1";
+  let navTab = "mapa";       // aba atualmente ativa (fonte do que persistimos)
+  let navReady = false;      // só persiste depois que a restauração inicial terminou
+
+  // Lê o estado salvo (pode ser null). Nunca lança.
+  function navLer() {
+    try { return JSON.parse(localStorage.getItem(NAV_LS) || "null"); }
+    catch (e) { return null; }
+  }
+
+  // Aplica os filtros do Mapa (mesmo vocabulário de qs(), portanto reversível).
+  // Aceita um URLSearchParams (do hash) ou o objeto {q, metric} salvo no LS.
+  async function navAplicarMapa(st) {
+    if (!st) return;
+    const p = st instanceof URLSearchParams ? st : new URLSearchParams(st.q || "");
+    const setV = (id, key) => { const el = $(id); if (el) el.value = p.get(key) || ""; };
+    setV("f-uf", "uf");
+    if (p.get("uf")) {  // carrega as microrregiões da UF antes de aplicar f-mr
+      try {
+        const lista = await (await fetch("/api/microrregioes?uf=" + encodeURIComponent(p.get("uf")))).json();
+        $("f-mr").innerHTML = `<option value="">Todas</option>` +
+          lista.map(o => `<option value="${esc(o.microrregiao)}">${esc(o.microrregiao)}</option>`).join("");
+      } catch (e) { /* mantém as opções atuais */ }
+    }
+    setV("f-mr", "microrregiao"); setV("f-seg", "segmento"); setV("f-status", "status");
+    setV("f-faixa", "faixa"); setV("f-pend", "pendencia"); setV("f-pendcad", "pendencia_cad");
+    setV("f-vendeu", "vendeu"); setV("f-resp", "responsavel"); setV("f-canal", "canal");
+    if ($("f-cred")) $("f-cred").checked = p.get("credenciado") === "1";
+    if ($("f-pot")) $("f-pot").checked = p.get("potencial") === "1";
+    if ($("f-tel")) $("f-tel").checked = p.get("telecom") === "1";
+    if ($("busca")) $("busca").value = p.get("q") || "";
+    if (!(st instanceof URLSearchParams) && st.metric) apMetric = st.metric;
+  }
+
+  // Restaura os filtros "escalares" das demais abas (Follow-up / Gerencial) a
+  // partir do que foi salvo. Rodado antes de carregarMe(), então sobrepõe-se ao
+  // default de carteira só quando o usuário de fato já tinha um filtro salvo.
+  function navAplicarVars(st) {
+    if (!st) return;
+    const fu = st.followup || {};
+    if ("resp" in fu) fuResp = fu.resp;      // "" = todos, null = ainda não iniciado
+    if ("uf" in fu) fuUF = fu.uf || "";
+    if ("status" in fu) fuStatus = fu.status || "";
+    if ("origem" in fu) fuOrigem = fu.origem || "";
+    if ("vendeu" in fu) fuVendeu = fu.vendeu || "";
+    if ("faixa" in fu) fuFaixa = fu.faixa || "";
+    if ("pend" in fu) fuPend = fu.pend || "";
+    if ("busca" in fu) fuBusca = fu.busca || "";
+    if ("cnpj" in fu) fuCnpj = fu.cnpj || "";
+    if ("idvsm" in fu) fuIdVsm = fu.idvsm || "";
+    const g = st.gerencial || {};
+    if (g.periodo) gerPeriodo = g.periodo;
+    if ("inicio" in g) gerInicio = g.inicio || "";
+    if ("fim" in g) gerFim = g.fim || "";
+  }
+
+  // Decide a rota inicial: hash (link direto/refresh) > última sessão (LS) > Mapa.
+  function navResolver() {
+    const h = (location.hash || "").replace(/^#/, "");
+    if (h) {
+      const [tab, query] = h.split("?");
+      if (NAV_TABS.includes(tab)) {
+        return { tab, mapa: tab === "mapa" && query ? new URLSearchParams(query) : null };
+      }
+    }
+    const saved = navLer();
+    if (saved && NAV_TABS.includes(saved.tab)) return { tab: saved.tab, mapa: saved.mapa || null };
+    return { tab: "mapa", mapa: null };
+  }
+
+  // Persiste a navegação atual: localStorage (sessão) + hash (link/refresh).
+  function navSalvar() {
+    if (!navReady) return;  // evita clobber do hash durante a restauração inicial
+    const st = {
+      tab: navTab,
+      mapa: { q: qs(), metric: apMetric },
+      followup: { resp: fuResp, uf: fuUF, status: fuStatus, origem: fuOrigem, vendeu: fuVendeu, faixa: fuFaixa, pend: fuPend, busca: fuBusca, cnpj: fuCnpj, idvsm: fuIdVsm },
+      gerencial: { periodo: gerPeriodo, inicio: gerInicio, fim: gerFim },
+    };
+    try { localStorage.setItem(NAV_LS, JSON.stringify(st)); } catch (e) { /* storage cheio/privado */ }
+    let hash = "#" + navTab;
+    if (navTab === "mapa") { const q = qs(); if (q) hash += "?" + q; }
+    if (location.hash !== hash) {
+      try { history.replaceState(null, "", hash); } catch (e) { location.hash = hash; }
+    }
+  }
+
+  // Reage a alterações EXTERNAS do hash (ex.: usuário cola outra rota na barra).
+  function navHashChange() {
+    const tab = (location.hash || "").replace(/^#/, "").split("?")[0];
+    if (NAV_TABS.includes(tab) && tab !== navTab) view(tab);
+  }
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -235,6 +335,13 @@ const App = (() => {
     try { OUTLINES = await (await fetch("/static/state-outlines.json")).json(); } catch (e) { OUTLINES = {}; }
     montarFiltros();
     await carregarMunicipios();
+    // Restaura a navegação ANTES do primeiro render: filtros escalares das demais
+    // abas + filtros do Mapa (do hash, se link direto; senão do localStorage).
+    const navSalvo = navLer();
+    navAplicarVars(navSalvo);
+    const navAlvo = navResolver();
+    if (navSalvo && navSalvo.mapa && navSalvo.mapa.metric) apMetric = navSalvo.mapa.metric;
+    await navAplicarMapa(navAlvo.mapa || (navSalvo && navSalvo.mapa) || null);
     await recarregar();
     window.addEventListener("scroll", hideTip, true);
     // Máscara de telefone em tempo real p/ qualquer input [data-mask=tel] (ficha,
@@ -255,6 +362,11 @@ const App = (() => {
     // Badge de pendências de follow-up (vencidas + hoje) na aba, sem abrir a aba.
     fetch("/api/follow-up").then(r => r.json()).then(atualizarBadgeFollowUp).catch(() => {});
     await carregarMe();  // chip do usuário + força definição de senha no 1º acesso
+    // Com o usuário/permissões conhecidos, abre a aba restaurada (view() faz o
+    // gating de acesso e, a partir daqui, navSalvar passa a sincronizar hash+LS).
+    navReady = true;
+    view(navAlvo.tab);
+    window.addEventListener("hashchange", navHashChange);
   }
 
   // ==================== Usuário / sessão ====================
@@ -703,6 +815,7 @@ const App = (() => {
     // Mantém o Follow-up e seu badge em sincronia após qualquer salvamento,
     // sem bloquear a atualização do mapa/lista (fire-and-forget).
     sincronizarFollowUp();
+    if (navTab === "mapa") navSalvar();  // reflete os filtros do Mapa no hash/LS
   }
 
   // Rebusca o follow-up em segundo plano: atualiza o badge sempre e re-renderiza
@@ -1269,7 +1382,7 @@ const App = (() => {
   }
 
   // Alterna a métrica do painel sem refazer a busca (recalcula de EMPRESAS).
-  function apMetrica(m) { apMetric = m; renderApuracao(); }
+  function apMetrica(m) { apMetric = m; renderApuracao(); navSalvar(); }
 
   // Clique num estado do painel: filtra o mapa/lista por aquele estado (ou limpa
   // se já estava selecionado). Reaproveita o fluxo de ufMudou() para sincronizar.
@@ -1435,14 +1548,21 @@ const App = (() => {
     Object.entries(views).forEach(([k, id]) => { const el = $(id); if (el) el.classList.toggle("hidden", k !== v); });
     ["mapa", "painel", "followup", "prospec", "gerencial", "concil"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
     // Barra de KPIs: filtrada no Mapa (acompanha a lista), global nas demais abas.
+    // Os cálculos seguem rodando (dados intactos); apenas escondemos a barra nas
+    // abas em que ela não deve aparecer — alteração puramente visual.
     if (v === "painel") renderPainel();        // renderPainel já repinta a barra (global)
     else if (v === "mapa") renderKPIs();       // DASH já está filtrado
     else renderKPIsGlobal();
+    // Oculta o cabeçalho de indicadores nestas abas (visual apenas): Dashboard,
+    // Follow-up, Prospecção, Gerencial e Conciliação. Permanece no Mapa.
+    const KPI_OCULTO = ["painel", "followup", "prospec", "gerencial", "concil"];
+    if ($("kpibar")) $("kpibar").hidden = KPI_OCULTO.includes(v);
     if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
     if (v === "gerencial") carregarGerencial();
     if (v === "concil") carregarConciliacao();
     fecharNav();  // fecha o menu móvel ao trocar de aba
+    navTab = v; navSalvar();  // persiste a aba ativa (hash + localStorage)
   }
 
   // ==================== GERENCIAL (produtividade comercial) ====================
@@ -1717,12 +1837,13 @@ const App = (() => {
   }
 
   // ---- interações dos filtros ----
-  function gerPreset(k) { gerPeriodo = k; recarregarGerencial(); }
+  function gerPreset(k) { gerPeriodo = k; recarregarGerencial(); navSalvar(); }
   function gerCustom() {
     const i = $("ger-ini"), f = $("ger-fim");
     if (i) gerInicio = i.value;
     if (f) gerFim = f.value;
     recarregarGerencial();
+    navSalvar();
   }
   function gerToggleColab(u, on) {
     if (on) { if (!gerUsers.includes(u)) gerUsers.push(u); }
@@ -1764,6 +1885,7 @@ const App = (() => {
     else if (id === "fu-faixa") fuFaixa = v;
     else if (id === "fu-pend") fuPend = v;
     renderFollowUpRows();
+    navSalvar();
   }
 
   // Busca por nome: re-renderiza só a lista. A toolbar (e o próprio campo) não é
@@ -1771,6 +1893,7 @@ const App = (() => {
   function fuBuscar(v) {
     fuBusca = v || "";
     renderFollowUpRows();
+    navSalvar();
   }
 
   // CNPJ e ID VSM são campos de digitação: re-renderizam só a lista (como a busca),
@@ -1779,10 +1902,12 @@ const App = (() => {
   function fuBuscarCnpj(v) {
     fuCnpj = v || "";
     renderFollowUpRows();
+    navSalvar();
   }
   function fuBuscarIdVsm(v) {
     fuIdVsm = v || "";
     renderFollowUpRows();
+    navSalvar();
   }
 
   function renderFollowUp() {
@@ -2017,6 +2142,7 @@ const App = (() => {
       $("p-uf").innerHTML = selOpts(B.ufs, "Todos os estados");
       $("p-hist-uf").innerHTML = `<option value="">Todas</option>` +
         B.ufs.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join("");
+      if ($("p-pend-resp")) $("p-pend-resp").innerHTML = selOpts(B.responsaveis, "Todos os consultores");
       prospecReady = true;
       carregarCronStatus();
     }
@@ -2143,6 +2269,7 @@ const App = (() => {
     linhas.push(`<div class="pl"><span>CNPJ</span><b class="hint">a completar</b></div>`);
     if (x.endereco) linhas.push(`<div class="pl"><span>Endereço</span><b>${esc(x.endereco)}</b></div>`);
     if (loc) linhas.push(`<div class="pl"><span>Cidade/UF</span><b>${esc(loc)}</b></div>`);
+    if (x.responsavel) linhas.push(`<div class="pl"><span>Consultor</span><b>${esc(x.responsavel)}</b></div>`);
     const links = [];
     if (rede) {
       links.push(`<a href="${esc(x.fonte || x.site)}" target="_blank" rel="noopener">Ver no ${esc(rede)}</a>`);
@@ -2219,16 +2346,30 @@ const App = (() => {
     renderPendentes();
   }
 
+  function filtrarPendentes() {
+    pendFiltroResp = $("p-pend-resp") ? $("p-pend-resp").value : "";
+    renderPendentes();
+  }
+
   function renderPendentes() {
     const title = $("p-pend-title"), acts = $("p-pend-acts"), box = $("p-pend");
     if (!box) return;
-    if (title) title.textContent = `Pendentes da varredura (${PEND.length})`;
+    const lista = pendFiltroResp ? PEND.filter(p => (p.responsavel || "") === pendFiltroResp) : PEND;
+    if (title) {
+      title.textContent = pendFiltroResp
+        ? `Pendentes da varredura (${lista.length} de ${PEND.length})`
+        : `Pendentes da varredura (${PEND.length})`;
+    }
     if (acts) acts.style.display = PEND.length ? "flex" : "none";
     if (!PEND.length) {
       box.innerHTML = `<div class="empty">Nenhum pendente. Rode a varredura (ou aguarde a diária) para encontrar novas empresas.</div>`;
       return;
     }
-    const rows = PEND.map(p => {
+    if (!lista.length) {
+      box.innerHTML = `<div class="empty">Nenhum pendente para o consultor <b>${esc(pendFiltroResp)}</b>. Limpe o filtro para ver todos.</div>`;
+      return;
+    }
+    const rows = lista.map(p => {
       const local = [cidadeCurta(p.cidade), p.uf].filter(Boolean).join(" · ") || "—";
       const tel = p.whatsapp || p.telefone || "";
       const ehSocial = p.tipo === "Instagram" || p.tipo === "Facebook";
@@ -2242,7 +2383,8 @@ const App = (() => {
       return `
       <tr>
         <td class="c-nome">${esc(p.nome)}${p.tipo ? `<br><span class="hint">${esc(p.tipo)}</span>` : ""}</td>
-        <td class="c-loc" title="${esc(p.cidade || "")}">${esc(local)}</td>
+        <td class="c-loc" title="${esc(p.cidade || "")}">${esc(local)}${p.microrregiao ? `<br><span class="hint">${esc(p.microrregiao)}</span>` : ""}</td>
+        <td class="c-cons">${p.responsavel ? `<span class="ptipo">${esc(p.responsavel)}</span>` : '<span class="hint">—</span>'}</td>
         <td class="c-tel">${tel ? esc(fmtTel(tel)) : '<span class="hint">—</span>'}</td>
         <td>${links.length ? links.join(" · ") : '<span class="hint">—</span>'}</td>
         <td class="c-resp">${esc(formatarData(p.encontrado_em))}</td>
@@ -2253,7 +2395,7 @@ const App = (() => {
         </td>
       </tr>`;
     }).join("");
-    box.innerHTML = `<table class="tbl-emp tbl-pend"><thead><tr><th>Empresa</th><th>Cidade/UF</th><th>Contato</th><th>Links</th><th>Encontrada</th><th class="sp"></th><th>Ação</th></tr></thead><tbody>${rows}</tbody></table>`;
+    box.innerHTML = `<table class="tbl-emp tbl-pend"><thead><tr><th>Empresa</th><th>Cidade/UF</th><th>Consultor</th><th>Contato</th><th>Links</th><th>Encontrada</th><th class="sp"></th><th>Ação</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   async function salvarPendente(id) {
@@ -3053,7 +3195,7 @@ const App = (() => {
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
     varreduraAgora, fuFiltrar, fuBuscar, fuBuscarCnpj, fuBuscarIdVsm,
-    salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes,
+    salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes, filtrarPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     navToggle,
     toggleUserMenu, abrirTrocarSenha, salvarSenha, abrirUsuarios, addUsuario, resetUsuario, delUsuario, fecharModal,

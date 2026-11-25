@@ -55,6 +55,7 @@ h3,h4{margin:0}
 
 /* ---------- KPI bar ---------- */
 .kpibar{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;padding:16px 20px 2px}
+.kpibar[hidden]{display:none}  /* atributo hidden vence o display:grid (ocultação por aba) */
 @media(max-width:1100px){.kpibar{grid-template-columns:repeat(3,1fr)}}
 .kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;box-shadow:var(--shadow)}
 .kpi .v{font-family:var(--fnum);font-size:25px;font-weight:700;font-variant-numeric:tabular-nums}
