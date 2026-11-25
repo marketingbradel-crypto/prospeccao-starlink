@@ -1601,8 +1601,7 @@ const App = (() => {
           <span class="map-ctx">Consolidado dos parceiros que <b>efetivamente venderam</b> · mesma fonte do Mapa e do Follow-up · quantidade = Vendas Concluídas (VSM)</span>
           <button class="btn" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.prodExport()" data-tip="Baixa em Excel (CSV) a tabela de parceiros produtivos com os filtros atuais aplicados.">Exportar Excel</button>
         </div>
-        <div class="bd"><div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div>
-          <div class="prod-podium" id="prod-podium"></div></div>
+        <div class="bd"><div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div></div>
       </div>
 
       <div class="prod-grid">
@@ -1723,28 +1722,27 @@ const App = (() => {
       ["Estados ativos", estados, ""],
     ];
     const el = $("prod-kpis"); if (!el) return;
-    el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("");
-    prodRenderPodium(lista);
+    el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")
+      + prodPodiumHTML(lista);
   }
 
-  function prodRenderPodium(lista) {
-    const el = $("prod-podium"); if (!el) return;
+  function prodPodiumHTML(lista) {
     const top3 = lista.slice().sort((a, b) => prodVendas(b) - prodVendas(a)).slice(0, 3);
-    if (!top3.length || prodVendas(top3[0]) <= 0) { el.innerHTML = ""; return; }
+    if (!top3.length || prodVendas(top3[0]) <= 0) return "";
     const medalhas = [
       { pos: "1º", rotulo: "Maior volume", grad: "linear-gradient(145deg,#f7d774,#caa02e)", anel: "#b8860b" },
       { pos: "2º", rotulo: "Vice-líder",   grad: "linear-gradient(145deg,#e4e7ec,#b4bac4)", anel: "#9aa0ac" },
       { pos: "3º", rotulo: "Terceiro",     grad: "linear-gradient(145deg,#e0a579,#b4703a)", anel: "#a66632" },
     ];
-    el.innerHTML = top3.map((e, i) => {
+    return top3.map((e, i) => {
       const m = medalhas[i];
       const v = prodVendas(e);
       const nome = prodNome(e);
       const uf = (e.uf || "").toUpperCase();
       const cidade = (e.cidade || "").trim();
       const local = [cidade, uf].filter(Boolean).join(" · ");
-      return `<div class="podium-card podium-${i + 1}" title="${esc(nome)}${local ? " — " + esc(local) : ""}">
-        <span class="podium-medal" style="background:${m.grad};box-shadow:0 2px 8px rgba(0,0,0,.18),inset 0 0 0 2px ${m.anel}">${m.pos}</span>
+      return `<div class="stat podium-card podium-${i + 1}" title="${esc(nome)}${local ? " — " + esc(local) : ""}">
+        <span class="podium-medal" style="background:${m.grad};box-shadow:inset 0 0 0 2px ${m.anel}">${m.pos}</span>
         <div class="podium-info">
           <div class="podium-rotulo">${m.rotulo}</div>
           <div class="podium-nome" title="${esc(nome)}">${esc(nome)}</div>
