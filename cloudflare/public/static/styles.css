@@ -545,7 +545,27 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .view-produtividade .card.wide{width:100%}
 .prod-grid{display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start}
 @media(max-width:900px){.prod-grid{grid-template-columns:1fr}}
-.prod-top .v{font-size:14px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* pódio top 3 de vendas */
+.prod-podium{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}
+@media(max-width:720px){.prod-podium{grid-template-columns:1fr}}
+.prod-podium:empty{display:none}
+.podium-card{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:12px;background:var(--panel);min-width:0;position:relative;overflow:hidden}
+.podium-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+.podium-1{border-color:rgba(202,160,46,.45);background:linear-gradient(90deg,rgba(247,215,116,.14),var(--panel) 60%)}
+.podium-1::before{background:linear-gradient(180deg,#f7d774,#caa02e)}
+.podium-2{border-color:rgba(154,160,172,.45)}
+.podium-2::before{background:linear-gradient(180deg,#e4e7ec,#b4bac4)}
+.podium-3{border-color:rgba(166,102,50,.4)}
+.podium-3::before{background:linear-gradient(180deg,#e0a579,#b4703a)}
+.podium-medal{flex:none;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-family:var(--fnum);font-weight:800;font-size:14px;color:#3a2e05;letter-spacing:-.5px}
+.podium-2 .podium-medal{color:#33363d}
+.podium-3 .podium-medal{color:#3a2410}
+.podium-info{min-width:0;flex:1}
+.podium-rotulo{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+.podium-nome{font-size:14px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.podium-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 
 /* distribuição por estado (mesma leitura por UF do Mapa) */
 .prod-ufcard .bd{display:flex;flex-direction:column;gap:5px;max-height:560px;overflow:auto}

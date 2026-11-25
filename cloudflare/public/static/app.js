@@ -1601,7 +1601,8 @@ const App = (() => {
           <span class="map-ctx">Consolidado dos parceiros que <b>efetivamente venderam</b> · mesma fonte do Mapa e do Follow-up · quantidade = Vendas Concluídas (VSM)</span>
           <button class="btn" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.prodExport()" data-tip="Baixa em Excel (CSV) a tabela de parceiros produtivos com os filtros atuais aplicados.">Exportar Excel</button>
         </div>
-        <div class="bd"><div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div></div>
+        <div class="bd"><div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div>
+          <div class="prod-podium" id="prod-podium"></div></div>
       </div>
 
       <div class="prod-grid">
@@ -1714,10 +1715,6 @@ const App = (() => {
     const totI = lista.reduce((s, e) => s + prodInstal(e), 0);
     const media = nP ? (Math.round((totV / nP) * 10) / 10) : 0;
     const estados = new Set(lista.map(e => (e.uf || "").toUpperCase()).filter(Boolean)).size;
-    let top = null;
-    for (const e of lista) if (!top || prodVendas(e) > prodVendas(top)) top = e;
-    const topTxt = top ? `${esc(prodNome(top))}` : "—";
-    const topSub = top ? `${prodVendas(top)} venda${prodVendas(top) === 1 ? "" : "s"}` : "";
     const stats = [
       ["Parceiros com vendas", nP, ""],
       ["Total de vendas", totV, hexCor("verde")],
@@ -1726,8 +1723,35 @@ const App = (() => {
       ["Estados ativos", estados, ""],
     ];
     const el = $("prod-kpis"); if (!el) return;
-    el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")
-      + `<div class="stat prod-top"><div class="v" title="${esc(topTxt)}">${topTxt}</div><div class="l">Maior volume${topSub ? " · " + esc(topSub) : ""}</div></div>`;
+    el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("");
+    prodRenderPodium(lista);
+  }
+
+  function prodRenderPodium(lista) {
+    const el = $("prod-podium"); if (!el) return;
+    const top3 = lista.slice().sort((a, b) => prodVendas(b) - prodVendas(a)).slice(0, 3);
+    if (!top3.length || prodVendas(top3[0]) <= 0) { el.innerHTML = ""; return; }
+    const medalhas = [
+      { pos: "1º", rotulo: "Maior volume", grad: "linear-gradient(145deg,#f7d774,#caa02e)", anel: "#b8860b" },
+      { pos: "2º", rotulo: "Vice-líder",   grad: "linear-gradient(145deg,#e4e7ec,#b4bac4)", anel: "#9aa0ac" },
+      { pos: "3º", rotulo: "Terceiro",     grad: "linear-gradient(145deg,#e0a579,#b4703a)", anel: "#a66632" },
+    ];
+    el.innerHTML = top3.map((e, i) => {
+      const m = medalhas[i];
+      const v = prodVendas(e);
+      const nome = prodNome(e);
+      const uf = (e.uf || "").toUpperCase();
+      const cidade = (e.cidade || "").trim();
+      const local = [cidade, uf].filter(Boolean).join(" · ");
+      return `<div class="podium-card podium-${i + 1}" title="${esc(nome)}${local ? " — " + esc(local) : ""}">
+        <span class="podium-medal" style="background:${m.grad};box-shadow:0 2px 8px rgba(0,0,0,.18),inset 0 0 0 2px ${m.anel}">${m.pos}</span>
+        <div class="podium-info">
+          <div class="podium-rotulo">${m.rotulo}</div>
+          <div class="podium-nome" title="${esc(nome)}">${esc(nome)}</div>
+          <div class="podium-sub">${v} venda${v === 1 ? "" : "s"}${local ? ` · ${esc(local)}` : ""}</div>
+        </div>
+      </div>`;
+    }).join("");
   }
 
   function prodRenderUF() {
@@ -1768,7 +1792,6 @@ const App = (() => {
       return `<tr onclick="App.abrirFicha(${e.id})" title="Abrir ficha de ${esc(prodNome(e))}">
         <td class="pt-rk">${i + 1}</td>
         <td class="pt-nome">${esc(prodNome(e))}</td>
-        <td class="pt-cnpj">${esc(prodFmtCnpj(e.cnpj) || "—")}</td>
         <td>${esc(e.id_vsm || "—")}</td>
         <td>${esc(e.cidade || "—")}</td>
         <td class="pt-uf">${esc((e.uf || "").toUpperCase() || "—")}</td>
@@ -1781,7 +1804,7 @@ const App = (() => {
       <thead><tr>
         <th class="pt-rk">#</th>
         <th class="pt-sort" onclick="App.prodSort('nome')">Parceiro${seta("nome")}</th>
-        <th>CNPJ</th><th>ID VSM</th><th>Cidade</th><th>UF</th><th>Consultor</th>
+        <th>ID VSM</th><th>Cidade</th><th>UF</th><th>Consultor</th>
         <th class="pt-num pt-sort" onclick="App.prodSort('vendas')">Vendas${seta("vendas")}</th>
         <th class="pt-num pt-sort" onclick="App.prodSort('instal')">Instalações${seta("instal")}</th>
       </tr></thead>
