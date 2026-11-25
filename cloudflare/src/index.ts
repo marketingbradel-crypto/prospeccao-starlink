@@ -660,6 +660,11 @@ function construirWhere(q: Record<string, string | undefined>): { clause: string
   const vendeu = String(q.vendeu ?? "").toLowerCase();
   if (["1", "true", "sim"].includes(vendeu)) where.push("ja_vendeu=1");
   else if (["0", "nao", "não", "false"].includes(vendeu)) where.push("(ja_vendeu=0 OR ja_vendeu IS NULL)");
+  // Instaladores sem vendas: >=1 antena instalada (VSM) e NENHUMA venda concluida
+  // registrada. Mesma base/colunas da aba Produtividade (empresas.instalacoes_vsm /
+  // vendas_vsm), so que o recorte inverso ao ranking — operacao sem conversao.
+  if (["1", "true", "sim"].includes(String(q.instalou_sem_venda ?? "").toLowerCase()))
+    where.push("(instalacoes_vsm>=1 AND (vendas_vsm IS NULL OR vendas_vsm<=0))");
   if (["1", "true", "sim"].includes(q.credenciado ?? "")) where.push("status='Pronto para venda'");
   if (["1", "true", "sim"].includes(q.potencial ?? ""))
     where.push("status IN ('Aguardando contato','Em atendimento')");

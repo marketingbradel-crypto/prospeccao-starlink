@@ -593,7 +593,12 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .prod-table .pt-uf{font-weight:700}
 .prod-table .pt-num{text-align:right;font-family:var(--fnum)}
 .prod-table .pt-v{font-weight:700;color:var(--verde)}
+.prod-table .pt-i{font-weight:700;color:var(--azul)}
 .prod-table .pt-conv{color:var(--muted);font-size:11px}
+
+/* KPI "Instaladores sem vendas" — card do painel superior, clicável */
+.stat.prod-inst-kpi{cursor:pointer;transition:background .12s,border-color .12s;border-color:color-mix(in srgb,var(--amarelo) 40%,var(--line))}
+.stat.prod-inst-kpi:hover{background:var(--accent-weak);border-color:var(--amarelo)}
 
 /* Power BI (seção secundária recolhível) */
 .prod-pbi>summary{list-style:none;cursor:pointer;padding:12px 14px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}

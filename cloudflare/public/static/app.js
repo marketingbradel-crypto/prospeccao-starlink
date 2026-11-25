@@ -1582,7 +1582,9 @@ const App = (() => {
   const PBI_PRODUTIVIDADE_URL = "https://app.powerbi.com/view?r=eyJrIjoiYjliNzQ2NDgtMGVkNy00NDg5LWEzMWQtNzEzMjdiZGNkODk0IiwidCI6IjdmZjk1OTlhLWY3NTItNDNlNC04YWRmLWFlZTQ1MTgyOWMxZCJ9";
   let prodMontado = false;   // shell montado uma vez (evita recarregar o iframe)
   let PROD = [];             // cache dos parceiros produtivos (fetch de /api/empresas?vendeu=1)
+  let INST = [];             // cache instaladores SEM vendas (/api/empresas?instalou_sem_venda=1)
   let prodF = { uf: "", cidade: "", cons: "", q: "" };
+  let instF = { uf: "", cidade: "", cons: "", q: "" };  // filtros próprios da relação de instaladores
   let prodSortKey = "vendas";  // vendas | instal | nome
   const prodNome = (e) => (e.nome_fantasia || e.razao_social || "(sem nome)");
   const prodVendas = (e) => Number(e.vendas_vsm) || 0;
@@ -1621,6 +1623,21 @@ const App = (() => {
         <div class="bd" id="prod-tbl"><div class="empty">Carregando…</div></div>
       </section>
 
+      <section class="card wide prod-tablecard" id="prod-inst-sec">
+        <div class="hd">
+          <h2 id="inst-tt">Instaladores sem vendas${infoIco("Parceiros que já instalaram pelo menos uma antena (Instalações Executadas/VSM) mas ainda não têm nenhuma venda concluída registrada. Mesma base e regras da aba Produtividade — recorte inverso ao ranking: já demonstraram capacidade operacional de instalação, mas ainda não converteram em venda própria. Parceiros sem qualquer movimentação não entram.", "Instaladores sem vendas")}</h2>
+          <div class="prod-filtros">
+            <select id="inst-f-uf" onchange="App.instFiltrar('uf')" title="Filtrar por estado"></select>
+            <select id="inst-f-cidade" onchange="App.instFiltrar()" title="Filtrar por cidade"></select>
+            <select id="inst-f-cons" onchange="App.instFiltrar()" title="Filtrar por consultor"></select>
+            <input id="inst-f-q" type="search" placeholder="Buscar parceiro, CNPJ, ID VSM…" oninput="App.instFiltrar()">
+            <button class="lnk" onclick="App.instLimpar()">limpar</button>
+            <button class="btn" style="background:var(--soft);color:var(--brand)" onclick="App.instExport()" data-tip="Baixa em Excel (CSV) a relação de instaladores sem vendas com os filtros atuais aplicados.">Exportar Excel</button>
+          </div>
+        </div>
+        <div class="bd" id="inst-tbl"><div class="empty">Carregando…</div></div>
+      </section>
+
       <details class="card wide prod-pbi">
         <summary>Funil detalhado por etapa — Power BI (pré-venda → processamento → elegível → habilitação)${infoIco("Visão complementar do funil comercial, ao vivo do Power BI. Essas etapas (pré-venda no Vivensis, processamento e elegibilidade na Starlink, antenas habilitadas) ainda não existem na base do sistema — por isso vêm direto da origem. A visão nativa acima cobre as vendas efetivamente registradas.", "Funil Power BI")}</summary>
         <div class="bd">
@@ -1633,10 +1650,18 @@ const App = (() => {
   }
 
   async function prodCarregar() {
+    // Dois recortes da MESMA base (tabela empresas), buscados em paralelo:
+    //   vendeu=1            -> parceiros produtivos (ranking de vendas)
+    //   instalou_sem_venda  -> instaladores com antena(s) e nenhuma venda concluída
     try {
-      PROD = await (await fetch("/api/empresas?vendeu=1")).json();
-    } catch { PROD = []; }
+      const [p, i] = await Promise.all([
+        fetch("/api/empresas?vendeu=1").then(r => r.json()),
+        fetch("/api/empresas?instalou_sem_venda=1").then(r => r.json()),
+      ]);
+      PROD = p; INST = i;
+    } catch { PROD = []; INST = []; }
     if (!Array.isArray(PROD)) PROD = [];
+    if (!Array.isArray(INST)) INST = [];
     // Popular selects de filtro (estado e consultor) a partir dos próprios produtivos.
     const ufs = [...new Set(PROD.map(e => (e.uf || "").toUpperCase()).filter(Boolean))].sort();
     const cons = [...new Set(PROD.map(e => e.responsavel).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
@@ -1645,6 +1670,7 @@ const App = (() => {
     if (selCo) selCo.innerHTML = `<option value="">Todos os consultores</option>` + cons.map(x => `<option value="${esc(x)}"${prodF.cons === x ? " selected" : ""}>${esc(x)}</option>`).join("");
     prodPopularCidades();
     prodAplicar();
+    instCarregar();
   }
 
   // Cidades dependem do estado selecionado (só as que têm parceiro produtivo).
@@ -1719,7 +1745,17 @@ const App = (() => {
     ];
     const el = $("prod-kpis"); if (!el) return;
     el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")
+      + prodInstKpiHTML()
       + prodPodiumHTML(lista);
+  }
+
+  // Card independente do ranking: total de instaladores sem vendas (base inteira,
+  // não reage aos filtros do ranking). Clique rola até a relação detalhada.
+  function prodInstKpiHTML() {
+    return `<div class="stat prod-inst-kpi" onclick="App.instScroll()" title="Parceiros com antena(s) instalada(s) e nenhuma venda concluída — clique para ver a relação">
+      <div class="v" style="color:${hexCor("amarelo")}">${INST.length}</div>
+      <div class="l">Instaladores sem vendas</div>
+    </div>`;
   }
 
   function prodPodiumHTML(lista) {
@@ -1831,6 +1867,118 @@ const App = (() => {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     toast(`${ord.length} parceiro(s) exportado(s).`);
+  }
+
+  // -------------------- Instaladores sem vendas (relação) --------------------
+  // Recorte independente do ranking: parceiros com instalações (VSM) e zero vendas
+  // concluídas. Filtros próprios (estado/cidade/consultor/busca), mesmo padrão do
+  // ranking. Reaproveita prodNome/prodInstal/prodVendas/prodFmtCnpj para consistência.
+  function instCarregar() {
+    const ufs = [...new Set(INST.map(e => (e.uf || "").toUpperCase()).filter(Boolean))].sort();
+    const cons = [...new Set(INST.map(e => e.responsavel).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    const selUf = $("inst-f-uf"), selCo = $("inst-f-cons");
+    if (selUf) selUf.innerHTML = `<option value="">Todos os estados</option>` + ufs.map(u => `<option value="${esc(u)}"${instF.uf === u ? " selected" : ""}>${esc(u)}</option>`).join("");
+    if (selCo) selCo.innerHTML = `<option value="">Todos os consultores</option>` + cons.map(x => `<option value="${esc(x)}"${instF.cons === x ? " selected" : ""}>${esc(x)}</option>`).join("");
+    instPopularCidades();
+    instRender();
+  }
+
+  // Cidades dependem do estado selecionado (só as que têm instalador sem venda).
+  function instPopularCidades() {
+    const sel = $("inst-f-cidade"); if (!sel) return;
+    const base = instF.uf ? INST.filter(e => (e.uf || "").toUpperCase() === instF.uf) : INST;
+    const cidades = [...new Set(base.map(e => (e.cidade || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    if (!cidades.includes(instF.cidade)) instF.cidade = "";
+    sel.innerHTML = `<option value="">Todas as cidades</option>` + cidades.map(c => `<option value="${esc(c)}"${instF.cidade === c ? " selected" : ""}>${esc(c)}</option>`).join("");
+  }
+
+  function instFiltrar(origem) {
+    instF.uf = ($("inst-f-uf") || {}).value || "";
+    instF.cons = ($("inst-f-cons") || {}).value || "";
+    instF.q = (($("inst-f-q") || {}).value || "").trim().toLowerCase();
+    if (origem === "uf") { instF.cidade = ""; instPopularCidades(); }
+    instF.cidade = ($("inst-f-cidade") || {}).value || "";
+    instRender();
+  }
+
+  function instLimpar() {
+    instF = { uf: "", cidade: "", cons: "", q: "" };
+    const u = $("inst-f-uf"), c = $("inst-f-cons"), q = $("inst-f-q");
+    if (u) u.value = ""; if (c) c.value = ""; if (q) q.value = "";
+    instPopularCidades();
+    instRender();
+  }
+
+  function instFiltrados() {
+    return INST.filter(e => {
+      if (instF.uf && (e.uf || "").toUpperCase() !== instF.uf) return false;
+      if (instF.cidade && (e.cidade || "").trim() !== instF.cidade) return false;
+      if (instF.cons && (e.responsavel || "") !== instF.cons) return false;
+      if (instF.q) {
+        const alvo = `${prodNome(e)} ${e.razao_social || ""} ${e.cnpj || ""} ${e.id_vsm || ""} ${e.cidade || ""}`.toLowerCase();
+        if (!alvo.includes(instF.q)) return false;
+      }
+      return true;
+    }).sort((a, b) => prodInstal(b) - prodInstal(a) || prodNome(a).localeCompare(prodNome(b), "pt-BR"));
+  }
+
+  function instScroll() {
+    const sec = $("prod-inst-sec"); if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function instRender() {
+    const el = $("inst-tbl"); if (!el) return;
+    const ord = instFiltrados();
+    // Atualiza a contagem no título preservando o ícone de ajuda (infoIco).
+    const ttCont = $("inst-tt");
+    if (ttCont) {
+      const ico = ttCont.querySelector(".info");
+      ttCont.innerHTML = `Instaladores sem vendas (${ord.length})${instF.uf ? " · " + esc(instF.uf) : ""}` + (ico ? ico.outerHTML : "");
+    }
+    if (!ord.length) {
+      el.innerHTML = `<div class="empty">Nenhum instalador sem vendas para os filtros atuais.</div>`;
+      return;
+    }
+    const rows = ord.map((e, i) => `<tr onclick="App.abrirFicha(${e.id})" title="Abrir ficha de ${esc(prodNome(e))}">
+        <td class="pt-rk">${i + 1}</td>
+        <td class="pt-nome">${esc(prodNome(e))}${e.razao_social && e.razao_social !== prodNome(e) ? `<div class="pt-cnpj">${esc(e.razao_social)}</div>` : ""}</td>
+        <td class="pt-cnpj">${esc(prodFmtCnpj(e.cnpj) || "—")}</td>
+        <td>${esc(e.id_vsm || "—")}</td>
+        <td>${esc(e.cidade || "—")}</td>
+        <td class="pt-uf">${esc((e.uf || "").toUpperCase() || "—")}</td>
+        <td>${esc(e.responsavel || "—")}</td>
+        <td class="pt-num pt-i">${prodInstal(e)}</td>
+        <td class="pt-num">${prodVendas(e)}</td>
+      </tr>`).join("");
+    el.innerHTML = `<div class="prod-tblwrap"><table class="prod-table">
+      <thead><tr>
+        <th class="pt-rk">#</th>
+        <th>Parceiro / Razão social</th>
+        <th>CNPJ</th><th>ID VSM</th><th>Cidade</th><th>UF</th><th>Consultor</th>
+        <th class="pt-num">Instalações</th>
+        <th class="pt-num">Vendas</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  }
+
+  function instExport() {
+    const ord = instFiltrados();
+    if (!ord.length) { toast("Nada para exportar com os filtros atuais."); return; }
+    const head = ["Parceiro", "Razão social", "CNPJ", "ID VSM", "Cidade", "UF", "Consultor", "Antenas instaladas", "Vendas concluídas"];
+    const cell = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
+    const linhas = ord.map(e => [
+      prodNome(e), e.razao_social || "", prodFmtCnpj(e.cnpj), e.id_vsm || "", e.cidade || "", (e.uf || "").toUpperCase(),
+      e.responsavel || "", prodInstal(e), prodVendas(e),
+    ].map(cell).join(";"));
+    const csv = "﻿" + [head.map(cell).join(";"), ...linhas].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "instaladores-sem-vendas.csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast(`${ord.length} instalador(es) exportado(s).`);
   }
 
   // ==================== GERENCIAL (produtividade comercial) ====================
@@ -3474,6 +3622,7 @@ const App = (() => {
     abrirBackup, backupAgora, backupExcluir, backupRestaurar,
     carregarConciliacao, concilAprovar, concilRejeitar, concilVarredura,
     prodFiltrar, prodLimpar, prodUf, prodSort, prodExport,
+    instFiltrar, instLimpar, instExport, instScroll,
   };
 })();
 
