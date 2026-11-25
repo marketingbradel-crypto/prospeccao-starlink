@@ -540,6 +540,59 @@ circle.mk:hover,circle.mk.hot{stroke:var(--brand);stroke-width:2.4}
 .userlist .ger-perm input{accent-color:var(--accent);cursor:pointer}
 
 /* ===================== Aba GERENCIAL ===================== */
+/* ---------- Produtividade dos parceiros (visão nativa + Power BI secundário) ---------- */
+.view-produtividade{display:flex;flex-direction:column;gap:14px}
+.view-produtividade .card.wide{width:100%}
+.prod-grid{display:grid;grid-template-columns:280px minmax(0,1fr);gap:14px;align-items:start}
+@media(max-width:900px){.prod-grid{grid-template-columns:1fr}}
+.prod-top .v{font-size:14px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* distribuição por estado (mesma leitura por UF do Mapa) */
+.prod-ufcard .bd{display:flex;flex-direction:column;gap:5px;max-height:560px;overflow:auto}
+.prod-ufrow{display:flex;align-items:center;gap:9px;width:100%;background:none;border:1px solid transparent;border-radius:8px;padding:6px 8px;text-align:left}
+.prod-ufrow:hover{background:var(--soft)}
+.prod-ufrow.on{background:var(--accent-weak);border-color:var(--accent)}
+.prod-ufrow .pu-uf{font-weight:700;width:30px;flex:none;color:var(--brand)}
+[data-theme="dark"] .prod-ufrow .pu-uf{color:var(--accent)}
+.prod-ufrow .pu-bar{flex:1;height:8px;background:var(--line);border-radius:5px;overflow:hidden}
+.prod-ufrow .pu-bar i{display:block;height:100%;background:var(--accent);border-radius:5px}
+.prod-ufrow .pu-n{font-family:var(--fnum);font-weight:700;width:34px;text-align:right;flex:none}
+
+/* filtros da tabela */
+.prod-filtros{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-left:auto}
+.prod-filtros select,.prod-filtros input{border:1px solid var(--line);border-radius:8px;padding:6px 9px;background:var(--panel);color:var(--fg);max-width:190px}
+.prod-filtros input[type=search]{min-width:200px}
+
+/* tabela de ranking */
+.prod-tablecard .bd{padding:0}
+.prod-tblwrap{overflow-x:auto}
+.prod-table{width:100%;border-collapse:collapse;font-size:13px}
+.prod-table th,.prod-table td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.prod-table thead th{position:sticky;top:0;background:var(--soft);font-weight:700;font-size:11.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);z-index:1}
+.prod-table .pt-sort{cursor:pointer;user-select:none}
+.prod-table .pt-sort:hover{color:var(--accent)}
+.prod-table .pth-on{color:var(--accent)}
+.prod-table tbody tr{cursor:pointer}
+.prod-table tbody tr:hover{background:var(--accent-weak)}
+.prod-table .pt-rk{width:34px;color:var(--muted);font-family:var(--fnum);text-align:right}
+.prod-table .pt-nome{font-weight:600;white-space:normal;min-width:180px}
+.prod-table .pt-cnpj{font-family:var(--fnum);font-size:12px;color:var(--muted)}
+.prod-table .pt-uf{font-weight:700}
+.prod-table .pt-num{text-align:right;font-family:var(--fnum)}
+.prod-table .pt-v{font-weight:700;color:var(--verde)}
+.prod-table .pt-conv{color:var(--muted);font-size:11px}
+
+/* Power BI (seção secundária recolhível) */
+.prod-pbi>summary{list-style:none;cursor:pointer;padding:12px 14px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}
+.prod-pbi>summary::-webkit-details-marker{display:none}
+.prod-pbi>summary::before{content:"▸";color:var(--muted)}
+.prod-pbi[open]>summary::before{content:"▾"}
+.prod-pbi>summary:hover{color:var(--accent)}
+.prod-pbi .bd{display:flex;flex-direction:column}
+.pbi-wrap{position:relative;width:100%;height:min(78vh,880px);min-height:440px;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--soft)}
+.pbi-wrap iframe{position:absolute;inset:0;width:100%;height:100%;border:0;display:block}
+@media(max-width:700px){.pbi-wrap{height:70vh;min-height:360px}}
+
 .view-gerencial{display:flex;flex-direction:column;gap:14px}
 .view-gerencial .card.wide{width:100%}
 .ger-grid{display:grid;grid-template-columns:2fr 1fr;gap:14px}

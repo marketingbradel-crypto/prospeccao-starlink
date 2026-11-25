@@ -988,6 +988,10 @@ const CSP = [
   "img-src 'self' data:",
   "font-src 'self' data:",
   "connect-src 'self'",
+  // Aba "Produtividade dos Parceiros": embute o relatorio Power BI (publish-to-web)
+  // num iframe. frame-src libera SOMENTE o host do Power BI como filho; frame-ancestors
+  // 'none' continua barrando que o NOSSO painel seja embutido por terceiros.
+  "frame-src https://app.powerbi.com",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

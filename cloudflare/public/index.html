@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bradel.X · Parceiros Starlink</title>
-<link rel="stylesheet" href="/static/styles.css?v=202611251359">
+<link rel="stylesheet" href="/static/styles.css?v=202611251710">
 </head>
 <body>
 
@@ -27,6 +27,7 @@
     <button id="tab-painel" onclick="App.view('painel')" data-tip="Indicadores e gráficos da base: status, cobertura VSM, funil de conversão e evolução mensal.">Dashboard</button>
     <button id="tab-followup" onclick="App.view('followup')" data-tip="Agenda de contatos: o que está vencido, o que fazer hoje e quais prospects esfriaram.">Follow-up</button>
     <button id="tab-prospec" onclick="App.view('prospec')" data-tip="Busca na web (Google Maps e redes sociais) potenciais parceiros por região — Starlink, antenas via satélite (VSAT/KU) e segurança eletrônica — e os traz para a base.">Prospecção</button>
+    <button id="tab-produtividade" onclick="App.view('produtividade')" data-tip="Parceiros que efetivamente venderam: ranking por volume de vendas, distribuição por estado e consultor. Mesma base do Mapa e do Follow-up. Inclui o funil detalhado do Power BI.">Produtividade</button>
     <button id="tab-gerencial" hidden onclick="App.view('gerencial')" data-tip="Produtividade comercial da equipe: quantas atualizações cada colaborador fez por dia. Acesso restrito.">Gerencial</button>
     <button id="tab-concil" hidden onclick="App.view('concil')" data-tip="Conciliação de parceiros duplicados: pares de fichas (Formulário × VSM) prováveis de serem o mesmo parceiro, para aprovar a fusão ou rejeitar. Acesso restrito.">Conciliação</button>
   </nav>
@@ -138,6 +139,9 @@
 
   <!-- ===================== VISÃO CONCILIAÇÃO ===================== -->
   <div class="view-concil hidden" id="view-concil"></div>
+
+  <!-- ===================== VISÃO PRODUTIVIDADE ===================== -->
+  <div class="view-produtividade hidden" id="view-produtividade"></div>
 
   <!-- ===================== VISÃO FOLLOW-UP ===================== -->
   <div class="view-followup hidden" id="view-followup">
@@ -280,6 +284,6 @@
 <!-- Toast -->
 <div class="toast" id="toast"></div>
 
-<script src="/static/app.js?v=202611251359"></script>
+<script src="/static/app.js?v=202611251710"></script>
 </body>
 </html>

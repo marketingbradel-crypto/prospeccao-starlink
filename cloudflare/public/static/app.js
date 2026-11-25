@@ -46,7 +46,7 @@ const App = (() => {
   // navegador). O hash da URL é a rota canônica (respeita links diretos e o
   // refresh); o localStorage guarda a última navegação da sessão, usado quando
   // não há hash (acesso à URL "pelada" / nova sessão).
-  const NAV_TABS = ["mapa", "painel", "followup", "prospec", "gerencial", "concil"];
+  const NAV_TABS = ["mapa", "painel", "followup", "prospec", "produtividade", "gerencial", "concil"];
   const NAV_LS = "nav:v1";
   let navTab = "mapa";       // aba atualmente ativa (fonte do que persistimos)
   let navReady = false;      // só persiste depois que a restauração inicial terminou
@@ -1544,9 +1544,9 @@ const App = (() => {
     if (v === "gerencial" && !(ME && (ME.perm_gerencial || ME.admin))) v = "mapa";
     // Conciliação: mesmo acesso do Gerencial (admin ou permissão gerencial).
     if (v === "concil" && !(ME && (ME.perm_gerencial || ME.admin))) v = "mapa";
-    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec", gerencial: "view-gerencial", concil: "view-concil" };
+    const views = { mapa: "view-mapa", painel: "view-painel", followup: "view-followup", prospec: "view-prospec", produtividade: "view-produtividade", gerencial: "view-gerencial", concil: "view-concil" };
     Object.entries(views).forEach(([k, id]) => { const el = $(id); if (el) el.classList.toggle("hidden", k !== v); });
-    ["mapa", "painel", "followup", "prospec", "gerencial", "concil"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
+    ["mapa", "painel", "followup", "prospec", "produtividade", "gerencial", "concil"].forEach(k => { const t = $("tab-" + k); if (t) t.classList.toggle("on", k === v); });
     // Barra de KPIs: filtrada no Mapa (acompanha a lista), global nas demais abas.
     // Os cálculos seguem rodando (dados intactos); apenas escondemos a barra nas
     // abas em que ela não deve aparecer — alteração puramente visual.
@@ -1555,15 +1555,268 @@ const App = (() => {
     else renderKPIsGlobal();
     // Oculta o cabeçalho de indicadores nestas abas (visual apenas): Dashboard,
     // Follow-up, Prospecção, Gerencial e Conciliação. Permanece no Mapa.
-    const KPI_OCULTO = ["painel", "followup", "prospec", "gerencial", "concil"];
+    const KPI_OCULTO = ["painel", "followup", "prospec", "produtividade", "gerencial", "concil"];
     if ($("kpibar")) $("kpibar").hidden = KPI_OCULTO.includes(v);
     if (v === "followup") carregarFollowUp();
     if (v === "prospec") initProspec();
+    if (v === "produtividade") renderProdutividade();
     if (v === "gerencial") carregarGerencial();
     if (v === "concil") carregarConciliacao();
     fecharNav();  // fecha o menu móvel ao trocar de aba
     navTab = v; navSalvar();  // persiste a aba ativa (hash + localStorage)
   }
+
+  // ==================== PRODUTIVIDADE DOS PARCEIROS ====================
+  // Visao NATIVA, consolidada a partir da MESMA base das abas Mapa e Follow-up
+  // (tabela empresas) — sem nova base, sem duplicar registros, sem fonte paralela.
+  //   Produtivo (qualifica)  = ja_vendeu=1  -> IDÊNTICO ao filtro "Já fez venda?" do
+  //                            Mapa e ao "Já venderam" do Dashboard (nenhuma divergência).
+  //   Quantidade de vendas    = vendas_vsm   -> "Vendas Concluídas" (VSM/Capilaridade),
+  //                            o único número de vendas efetivamente registrado por
+  //                            parceiro na base. Pré-vendas/cadastros NÃO contam.
+  // Fonte de dados: GET /api/empresas?vendeu=1 (mesmo endpoint/where do Mapa). Assim os
+  // números batem sempre com as outras abas e se atualizam sozinhos a cada nova venda.
+  // Deduplicação por ficha (empresas já é unificada por CNPJ/ID VSM — ver conciliação),
+  // então cada parceiro entra UMA vez. O Power BI (funil pré-venda→habilitação) fica
+  // como seção secundária, pois essas etapas ainda não existem na base.
+  const PBI_PRODUTIVIDADE_URL = "https://app.powerbi.com/view?r=eyJrIjoiYjliNzQ2NDgtMGVkNy00NDg5LWEzMWQtNzEzMjdiZGNkODk0IiwidCI6IjdmZjk1OTlhLWY3NTItNDNlNC04YWRmLWFlZTQ1MTgyOWMxZCJ9";
+  let prodMontado = false;   // shell montado uma vez (evita recarregar o iframe)
+  let PROD = [];             // cache dos parceiros produtivos (fetch de /api/empresas?vendeu=1)
+  let prodF = { uf: "", cidade: "", cons: "", q: "" };
+  let prodSortKey = "vendas";  // vendas | instal | nome
+  const prodNome = (e) => (e.nome_fantasia || e.razao_social || "(sem nome)");
+  const prodVendas = (e) => Number(e.vendas_vsm) || 0;
+  const prodInstal = (e) => Number(e.instalacoes_vsm) || 0;
+
+  function renderProdutividade() {
+    if (!prodMontado) { prodMontarShell(); prodMontado = true; }
+    prodCarregar();  // re-busca a cada abertura => sempre reflete novas vendas
+  }
+
+  function prodMontarShell() {
+    $("view-produtividade").innerHTML = `
+      <div class="card wide">
+        <div class="hd">
+          <h2>Produtividade dos parceiros${infoIco("Parceiros que já realizaram ao menos uma venda efetivamente registrada. Mesma base do Mapa e do Follow-up (campo 'Já fez venda?'). A quantidade por parceiro é 'Vendas Concluídas' (VSM). Pré-vendas e cadastros não entram. Atualiza automaticamente conforme novas vendas são registradas.", "Produtividade dos parceiros")}</h2>
+          <span class="map-ctx">Consolidado dos parceiros que <b>efetivamente venderam</b> · mesma fonte do Mapa e do Follow-up · quantidade = Vendas Concluídas (VSM)</span>
+          <button class="btn" style="margin-left:auto;background:var(--soft);color:var(--brand)" onclick="App.prodExport()" data-tip="Baixa em Excel (CSV) a tabela de parceiros produtivos com os filtros atuais aplicados.">Exportar Excel</button>
+        </div>
+        <div class="bd"><div class="statgrid" id="prod-kpis"><div class="empty">Carregando…</div></div></div>
+      </div>
+
+      <div class="prod-grid">
+        <aside class="card prod-ufcard">
+          <div class="hd"><h2>Parceiros produtivos por estado${infoIco("Quantos parceiros com vendas há em cada estado (mesma distribuição geográfica por UF do Mapa). Clique num estado para filtrar a tabela; clique de novo para limpar.", "Por estado")}</h2></div>
+          <div class="bd" id="prod-uf"></div>
+        </aside>
+
+        <section class="card prod-tablecard">
+          <div class="hd">
+            <h2 id="prod-tt">Ranking de parceiros</h2>
+            <div class="prod-filtros">
+              <select id="prod-f-uf" onchange="App.prodFiltrar('uf')" title="Filtrar por estado"></select>
+              <select id="prod-f-cidade" onchange="App.prodFiltrar()" title="Filtrar por cidade"></select>
+              <select id="prod-f-cons" onchange="App.prodFiltrar()" title="Filtrar por consultor"></select>
+              <input id="prod-f-q" type="search" placeholder="Buscar parceiro, CNPJ, ID VSM…" oninput="App.prodFiltrar()">
+              <button class="lnk" onclick="App.prodLimpar()">limpar</button>
+            </div>
+          </div>
+          <div class="bd" id="prod-tbl"><div class="empty">Carregando…</div></div>
+        </section>
+      </div>
+
+      <details class="card wide prod-pbi">
+        <summary>Funil detalhado por etapa — Power BI (pré-venda → processamento → elegível → habilitação)${infoIco("Visão complementar do funil comercial, ao vivo do Power BI. Essas etapas (pré-venda no Vivensis, processamento e elegibilidade na Starlink, antenas habilitadas) ainda não existem na base do sistema — por isso vêm direto da origem. A visão nativa acima cobre as vendas efetivamente registradas.", "Funil Power BI")}</summary>
+        <div class="bd">
+          <span class="map-ctx" style="margin-bottom:10px">Fonte: relatório Power BI (dados Vivensis/Starlink), atualizado na origem · <a href="${PBI_PRODUTIVIDADE_URL}" target="_blank" rel="noopener noreferrer">abrir em nova aba ↗</a></span>
+          <div class="pbi-wrap">
+            <iframe title="Funil de produtividade — Power BI" src="${PBI_PRODUTIVIDADE_URL}" allowfullscreen loading="lazy" referrerpolicy="no-referrer"></iframe>
+          </div>
+        </div>
+      </details>`;
+  }
+
+  async function prodCarregar() {
+    try {
+      PROD = await (await fetch("/api/empresas?vendeu=1")).json();
+    } catch { PROD = []; }
+    if (!Array.isArray(PROD)) PROD = [];
+    // Popular selects de filtro (estado e consultor) a partir dos próprios produtivos.
+    const ufs = [...new Set(PROD.map(e => (e.uf || "").toUpperCase()).filter(Boolean))].sort();
+    const cons = [...new Set(PROD.map(e => e.responsavel).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    const selUf = $("prod-f-uf"), selCo = $("prod-f-cons");
+    if (selUf) selUf.innerHTML = `<option value="">Todos os estados</option>` + ufs.map(u => `<option value="${esc(u)}"${prodF.uf === u ? " selected" : ""}>${esc(u)}</option>`).join("");
+    if (selCo) selCo.innerHTML = `<option value="">Todos os consultores</option>` + cons.map(x => `<option value="${esc(x)}"${prodF.cons === x ? " selected" : ""}>${esc(x)}</option>`).join("");
+    prodPopularCidades();
+    prodAplicar();
+  }
+
+  // Cidades dependem do estado selecionado (só as que têm parceiro produtivo).
+  function prodPopularCidades() {
+    const sel = $("prod-f-cidade"); if (!sel) return;
+    const base = prodF.uf ? PROD.filter(e => (e.uf || "").toUpperCase() === prodF.uf) : PROD;
+    const cidades = [...new Set(base.map(e => (e.cidade || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
+    if (!cidades.includes(prodF.cidade)) prodF.cidade = "";
+    sel.innerHTML = `<option value="">Todas as cidades</option>` + cidades.map(c => `<option value="${esc(c)}"${prodF.cidade === c ? " selected" : ""}>${esc(c)}</option>`).join("");
+  }
+
+  function prodFiltrar(origem) {
+    prodF.uf = ($("prod-f-uf") || {}).value || "";
+    prodF.cons = ($("prod-f-cons") || {}).value || "";
+    prodF.q = (($("prod-f-q") || {}).value || "").trim().toLowerCase();
+    if (origem === "uf") { prodF.cidade = ""; prodPopularCidades(); }
+    prodF.cidade = ($("prod-f-cidade") || {}).value || "";
+    prodAplicar();
+  }
+
+  function prodLimpar() {
+    prodF = { uf: "", cidade: "", cons: "", q: "" };
+    const u = $("prod-f-uf"), c = $("prod-f-cons"), q = $("prod-f-q");
+    if (u) u.value = ""; if (c) c.value = ""; if (q) q.value = "";
+    prodPopularCidades();
+    prodAplicar();
+  }
+
+  // Clique num estado do painel de distribuição = alterna o filtro de UF.
+  function prodUf(uf) {
+    prodF.uf = (prodF.uf === uf ? "" : uf);
+    prodF.cidade = "";
+    const sel = $("prod-f-uf"); if (sel) sel.value = prodF.uf;
+    prodPopularCidades();
+    prodAplicar();
+  }
+
+  function prodSort(key) { prodSortKey = key; prodAplicar(); }
+
+  function prodFiltrados() {
+    return PROD.filter(e => {
+      if (prodF.uf && (e.uf || "").toUpperCase() !== prodF.uf) return false;
+      if (prodF.cidade && (e.cidade || "").trim() !== prodF.cidade) return false;
+      if (prodF.cons && (e.responsavel || "") !== prodF.cons) return false;
+      if (prodF.q) {
+        const alvo = `${prodNome(e)} ${e.razao_social || ""} ${e.cnpj || ""} ${e.id_vsm || ""} ${e.cidade || ""}`.toLowerCase();
+        if (!alvo.includes(prodF.q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function prodAplicar() {
+    const lista = prodFiltrados();
+    prodRenderKPIs(lista);
+    prodRenderUF();          // distribuição por estado = SEMPRE o total (navegação)
+    prodRenderTabela(lista);
+  }
+
+  function prodRenderKPIs(lista) {
+    const nP = lista.length;
+    const totV = lista.reduce((s, e) => s + prodVendas(e), 0);
+    const totI = lista.reduce((s, e) => s + prodInstal(e), 0);
+    const media = nP ? (Math.round((totV / nP) * 10) / 10) : 0;
+    const estados = new Set(lista.map(e => (e.uf || "").toUpperCase()).filter(Boolean)).size;
+    let top = null;
+    for (const e of lista) if (!top || prodVendas(e) > prodVendas(top)) top = e;
+    const topTxt = top ? `${esc(prodNome(top))}` : "—";
+    const topSub = top ? `${prodVendas(top)} venda${prodVendas(top) === 1 ? "" : "s"}` : "";
+    const stats = [
+      ["Parceiros com vendas", nP, ""],
+      ["Total de vendas", totV, hexCor("verde")],
+      ["Média por parceiro", media, ""],
+      ["Antenas instaladas", totI, hexCor("azul")],
+      ["Estados ativos", estados, ""],
+    ];
+    const el = $("prod-kpis"); if (!el) return;
+    el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")
+      + `<div class="stat prod-top"><div class="v" title="${esc(topTxt)}">${topTxt}</div><div class="l">Maior volume${topSub ? " · " + esc(topSub) : ""}</div></div>`;
+  }
+
+  function prodRenderUF() {
+    const el = $("prod-uf"); if (!el) return;
+    const porUf = {};
+    for (const e of PROD) {
+      const uf = (e.uf || "").toUpperCase(); if (!uf) continue;
+      (porUf[uf] = porUf[uf] || { n: 0, v: 0 }).n += 1;
+      porUf[uf].v += prodVendas(e);
+    }
+    const linhas = Object.entries(porUf).sort((a, b) => b[1].n - a[1].n);
+    if (!linhas.length) { el.innerHTML = `<div class="empty">Sem parceiros com vendas.</div>`; return; }
+    const maxN = Math.max(...linhas.map(x => x[1].n));
+    el.innerHTML = linhas.map(([uf, o]) => {
+      const pct = maxN ? Math.round((o.n / maxN) * 100) : 0;
+      const on = prodF.uf === uf ? " on" : "";
+      return `<button class="prod-ufrow${on}" onclick="App.prodUf('${esc(uf)}')" title="${o.n} parceiro(s) · ${o.v} venda(s)">
+        <span class="pu-uf">${esc(uf)}</span>
+        <span class="pu-bar"><i style="width:${pct}%"></i></span>
+        <span class="pu-n">${o.n}</span>
+      </button>`;
+    }).join("");
+  }
+
+  function prodRenderTabela(lista) {
+    const el = $("prod-tbl"); if (!el) return;
+    const ord = lista.slice().sort((a, b) => {
+      if (prodSortKey === "nome") return prodNome(a).localeCompare(prodNome(b), "pt-BR");
+      if (prodSortKey === "instal") return prodInstal(b) - prodInstal(a) || prodVendas(b) - prodVendas(a);
+      return prodVendas(b) - prodVendas(a) || prodInstal(b) - prodInstal(a);
+    });
+    const tt = $("prod-tt");
+    if (tt) tt.textContent = `Ranking de parceiros (${ord.length})${prodF.uf ? " · " + prodF.uf : ""}`;
+    if (!ord.length) { el.innerHTML = `<div class="empty">Nenhum parceiro com vendas para os filtros atuais.</div>`; return; }
+    const seta = (k) => prodSortKey === k ? ' <span class="pth-on">▾</span>' : "";
+    const rows = ord.map((e, i) => {
+      const conv = prodVendas(e) > 0 ? Math.round((prodInstal(e) / prodVendas(e)) * 100) : null;
+      return `<tr onclick="App.abrirFicha(${e.id})" title="Abrir ficha de ${esc(prodNome(e))}">
+        <td class="pt-rk">${i + 1}</td>
+        <td class="pt-nome">${esc(prodNome(e))}</td>
+        <td class="pt-cnpj">${esc(prodFmtCnpj(e.cnpj) || "—")}</td>
+        <td>${esc(e.id_vsm || "—")}</td>
+        <td>${esc(e.cidade || "—")}</td>
+        <td class="pt-uf">${esc((e.uf || "").toUpperCase() || "—")}</td>
+        <td>${esc(e.responsavel || "—")}</td>
+        <td class="pt-num pt-v">${prodVendas(e)}</td>
+        <td class="pt-num">${prodInstal(e)}${conv != null ? ` <span class="pt-conv" title="Instalações ÷ vendas">(${conv}%)</span>` : ""}</td>
+      </tr>`;
+    }).join("");
+    el.innerHTML = `<div class="prod-tblwrap"><table class="prod-table">
+      <thead><tr>
+        <th class="pt-rk">#</th>
+        <th class="pt-sort" onclick="App.prodSort('nome')">Parceiro${seta("nome")}</th>
+        <th>CNPJ</th><th>ID VSM</th><th>Cidade</th><th>UF</th><th>Consultor</th>
+        <th class="pt-num pt-sort" onclick="App.prodSort('vendas')">Vendas${seta("vendas")}</th>
+        <th class="pt-num pt-sort" onclick="App.prodSort('instal')">Instalações${seta("instal")}</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  }
+
+  // CNPJ 00.000.000/0000-00 (só formata quando tem 14 dígitos; senão devolve como está).
+  function prodFmtCnpj(v) {
+    const d = String(v || "").replace(/\D/g, "");
+    if (d.length !== 14) return v || "";
+    return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
+  }
+
+  // Export Excel-friendly: CSV com BOM (acentos corretos no Excel) e separador ';'.
+  function prodExport() {
+    const ord = prodFiltrados().slice().sort((a, b) => prodVendas(b) - prodVendas(a) || prodInstal(b) - prodInstal(a));
+    if (!ord.length) { toast("Nada para exportar com os filtros atuais."); return; }
+    const head = ["Parceiro", "CNPJ", "ID VSM", "Cidade", "UF", "Consultor", "Vendas (concluídas)", "Antenas instaladas"];
+    const cell = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
+    const linhas = ord.map(e => [
+      prodNome(e), prodFmtCnpj(e.cnpj), e.id_vsm || "", e.cidade || "", (e.uf || "").toUpperCase(),
+      e.responsavel || "", prodVendas(e), prodInstal(e),
+    ].map(cell).join(";"));
+    const csv = "﻿" + [head.map(cell).join(";"), ...linhas].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "produtividade-parceiros.csv";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast(`${ord.length} parceiro(s) exportado(s).`);
+  }
+
+  // ==================== GERENCIAL (produtividade comercial) ====================
 
   // ==================== GERENCIAL (produtividade comercial) ====================
   const GER_PRESETS = [
@@ -3203,6 +3456,7 @@ const App = (() => {
     setPapel, abrirMinhasSessoes, logoutAll, abrirSeguranca, segAba, segRevogar,
     abrirBackup, backupAgora, backupExcluir, backupRestaurar,
     carregarConciliacao, concilAprovar, concilRejeitar, concilVarredura,
+    prodFiltrar, prodLimpar, prodUf, prodSort, prodExport,
   };
 })();
 
