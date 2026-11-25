@@ -179,7 +179,14 @@ def seed_territorios(wb):
 
 
 def seed_from_existing():
-    """Popula o banco a partir de Gestao_Prospeccao_Revendas_Starlink.xlsx. Retorna qtd. importada."""
+    """Popula o banco a partir de Gestao_Prospeccao_Revendas_Starlink.xlsx. Retorna qtd. importada.
+
+    TRAVA ANTI-DUPLA-FONTE: a fonte oficial é a plataforma na nuvem (Worker + D1),
+    não esta planilha-protótipo (obsoleta). Para evitar reconstruir uma base local
+    divergente, este seed só roda com opt-in explícito: PERMITIR_SEED_LEGADO=1.
+    """
+    if os.environ.get("PERMITIR_SEED_LEGADO") != "1":
+        return {"ok": False, "motivo": "seed legado desativado (defina PERMITIR_SEED_LEGADO=1 para forçar)", "importadas": 0}
     if not os.path.exists(PLANILHA_ATUAL):
         return {"ok": False, "motivo": "planilha nao encontrada", "importadas": 0}
     wb = openpyxl.load_workbook(PLANILHA_ATUAL, data_only=True)

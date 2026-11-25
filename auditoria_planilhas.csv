@@ -1,0 +1,24 @@
+﻿Nome do arquivo;Localizacao;Finalidade;Usado pelo sistema?;Duplicado/divergente vs base mestre;Risco de conflito;Recomendacao;Justificativa tecnica
+Gestao_Prospeccao_Revendas_Starlink.xlsx;raiz;Planilha-prototipo original (6 abas, 100 revendas);"SIM - app Flask LEGADO (excel_io.py, seed_from_excel.py, run.py); AGORA TRAVADO";"Sim - 100 linhas vs 954 na producao; schema antigo";POTENCIAL CONFLITO (dupla fonte) - mitigado pela trava;OBSOLETO;"Reconstruiria base local paralela divergente; trava anti-dupla-fonte ja aplicada em run.py/excel_io.py"
+data/prospeccao.db;data/;Banco SQLite do app Flask legado;"SIM - legado (db.py); gitignored";Derivado da planilha obsoleta;POTENCIAL CONFLITO - mitigado;OBSOLETO;"Base local do prototipo; superada pela nuvem (Worker+D1)"
+Vivensis_Instaladores_Status_Bradel.xlsx;raiz;Copia local de 1 dos 2 arquivos OFICIAIS (4 abas);Referenciado por nome so no agente-sync (le da REDE, nao daqui);E copia do oficial, porem local e congelada (17/11);POTENCIAL CONFLITO (reimport manual);MANTER COMO APOIO;"Fonte verdadeira e a da rede U:\Matriz\Back office\Dep; nunca importar esta copia"
+contatos_parceiros_starlink_GO_MA_PA_TO.xlsx;raiz;797 contatos VSM (GO/MA/PA/TO);Nao (import pontual via UI);Dados ja no D1;Baixo;ARQUIVO REDUNDANTE;Insumo ja ingerido na producao
+import_vsm_universo_basico.xlsx;raiz;Universo VSM (797) para import;Nao;Dados ja no D1;Baixo;ARQUIVO REDUNDANTE;Insumo ja ingerido
+import_vsm_FALTANTES.xlsx;raiz;Faltantes VSM para import;Nao;Dados ja no D1;Baixo;ARQUIVO REDUNDANTE;Insumo ja ingerido
+import_vsm_FALTANTES_lote1.xlsx;raiz;Lote 1 dos faltantes VSM;Nao;Fatia do FALTANTES;Baixo;ARQUIVO REDUNDANTE;Copia fatiada do principal, ja ingerido
+import_vsm_FALTANTES_lote2.xlsx;raiz;Lote 2 dos faltantes VSM;Nao;Fatia do FALTANTES;Baixo;ARQUIVO REDUNDANTE;Copia fatiada do principal, ja ingerido
+import_vsm_FALTANTES_lote3.xlsx;raiz;Lote 3 dos faltantes VSM;Nao;Fatia do FALTANTES;Baixo;ARQUIVO REDUNDANTE;Copia fatiada do principal, ja ingerido
+import_formulario_credenciamento_basico.xlsx;raiz;Formulario (138) versao antiga;Nao;Substituido pelo CORRIGIDO;Baixo;OBSOLETO;Versao superada pela consolidacao CORRIGIDO
+import_credenciamento_CORRIGIDO.xlsx;raiz;Formulario consolidado (saida de consolidar_formulario_credenciamento.py);SIM - lido por gerar_correcoes_fichas.py (script manual);Artefato final da consolidacao;Baixo;MANTER COMO APOIO;"Saida util da consolidacao; nao e fonte automatica"
+vsm_vendas_por_municipio.xlsx;raiz;Vendas/instalacoes por municipio (capilaridade);Nao (ja ingerido);Dados ja no D1;Baixo;ARQUIVO REDUNDANTE;Insumo de capilaridade ja ingerido
+Cadastro e Credenciamento - Parceiros Starlink (Venda + Instalacao) (respostas).xlsx;raiz;Export cru do Google Forms (fonte do CORRIGIDO);SIM - lido por consolidar_formulario_credenciamento.py;Materia-prima do CORRIGIDO;Baixo;MANTER COMO APOIO;"Original do formulario; preservar"
+leads-prospeccao-starlink-manual.csv;raiz;Leads manuais para enriquecimento;SIM - lido por _enriquecer.py (one-off);Insumo pontual;Baixo;MANTER COMO APOIO;Entrada manual de enriquecimento
+empresas_duplicadas.csv;raiz;Relatorio de fichas duplicadas;Nao (relatorio);Relatorio de trabalho;Baixo;MANTER COMO APOIO;"Relatorio da limpeza; descartavel apos conclusao"
+correcoes_revisar.csv;raiz;Casos ambiguos p/ decisao manual;Saida de gerar_correcoes_fichas.py;Relatorio de trabalho;Baixo;MANTER COMO APOIO;Relatorio da limpeza
+_enriquecimento_confiante.csv;raiz;Relatorio enriquecimento (confiante);Saida de _enriquecer.py;Relatorio de trabalho;Baixo;DESCARTAVEL;Artefato temporario de limpeza
+_enriquecimento_proposto.csv;raiz;Relatorio enriquecimento (proposto);Artefato de limpeza;Relatorio de trabalho;Baixo;DESCARTAVEL;Artefato temporario de limpeza
+_enriquecimento_revisar.csv;raiz;Relatorio enriquecimento (revisar);Saida de _enriquecer.py;Relatorio de trabalho;Baixo;DESCARTAVEL;Artefato temporario de limpeza
+_*.json (≈20 arquivos);raiz;Dumps/snapshots de trabalho das limpezas (prefixo _);Alguns lidos por scripts one-off (_enriquecer, gerar_merge*);Snapshots temporarios;Baixo;DESCARTAVEL;"Gitignored; nenhum e fonte viva, apenas poluem a pasta"
+backup_*.json (5 arquivos);raiz;Backups pre-merge de grupos especificos;Nao;Snapshots temporarios;Baixo;DESCARTAVEL;Descartavel apos validar merges
+"app/static/geo.json; state-outlines.json; cloudflare/*";app/, cloudflare/;Assets de mapa e config do Worker;SIM - assets do sistema;Nao e base de dados;Nenhum;MANTER;Necessarios ao funcionamento (mapa/Worker)
+FONTE OFICIAL: Cadastros Starlink - consolidado Oficial.xlsx;U:\Matriz\Back office\Dep (REDE);Arquivo-mestre oficial;SIM - lido pelo agente-sync e enviado ao Worker;E a referencia/mestre;Nenhum;MANTER (fora do projeto);"Fonte unica e oficial; nao esta na pasta do projeto - correto"

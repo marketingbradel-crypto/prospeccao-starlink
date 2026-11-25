@@ -627,6 +627,22 @@ def export_xlsx():
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+def _decodificar_csv(dados):
+    """Decodifica bytes de CSV sem perder acentos.
+
+    Tenta UTF-8 (com ou sem BOM); se houver byte invalido (CSV salvo pelo Excel
+    em CP1252/Latin-1), cai para esses codecs. NUNCA usa errors='replace', que
+    transformaria acentos em caracteres de substituicao de forma irreversivel.
+    """
+    for codec in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return dados.decode(codec)
+        except UnicodeDecodeError:
+            continue
+    # latin-1 mapeia qualquer byte, mas por seguranca mantemos um ultimo recurso
+    return dados.decode("latin-1")
+
+
 def _linha_para_empresa(d):
     """Normaliza um dict (cabecalho do modelo -> valor) em payload de empresa."""
     # aceita tanto o nome amigavel quanto a coluna do banco
@@ -649,7 +665,7 @@ def importar():
     nome = (f.filename or "").lower()
     registros = []
     if nome.endswith(".csv"):
-        texto = f.read().decode("utf-8-sig", errors="replace")
+        texto = _decodificar_csv(f.read())
         reader = csv.DictReader(io.StringIO(texto))
         registros = [dict(r) for r in reader]
     else:
