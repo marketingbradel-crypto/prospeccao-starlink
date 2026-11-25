@@ -553,11 +553,16 @@ async function inserirEmpresasLote(db: D1Database, novos: Row[], erros: string[]
   return ok;
 }
 
-async function atualizarEmpresa(db: D1Database, eid: number, e: Row): Promise<void> {
+// Monta (sem executar) o UPDATE de uma ficha — usado solto ou em DB.batch().
+function stmtAtualizarEmpresa(db: D1Database, eid: number, e: Row): D1PreparedStatement {
   const cols = Object.keys(e).filter((c) => c !== "id");
   const sets = cols.map((c) => `${c}=?`).join(",");
   const vals = cols.map((c) => (e[c] === undefined ? null : e[c]));
-  await db.prepare(`UPDATE empresas SET ${sets} WHERE id=?`).bind(...vals, eid).run();
+  return db.prepare(`UPDATE empresas SET ${sets} WHERE id=?`).bind(...vals, eid);
+}
+
+async function atualizarEmpresa(db: D1Database, eid: number, e: Row): Promise<void> {
+  await stmtAtualizarEmpresa(db, eid, e).run();
 }
 
 function empresaDict(row: Row | null): Row | null {
@@ -3556,10 +3561,18 @@ async function importarVivensis(db: D1Database, buf: ArrayBuffer): Promise<Resul
   // por nome, para nao fundir CNPJs distintos de mesmo nome): aqui sao updates
   // DIRECIONADOS a uma ficha (nao fusao de identidades), entao casar uma ficha de
   // mesmo nome+cidade que ja tenha CNPJ e o comportamento desejado.
-  const { results } = await db.prepare("SELECT id, cnpj_norm, id_vsm, razao_social, uf, cidade FROM empresas").all<Row>();
+  // Carrega TODAS as fichas UMA vez (linhas completas) num mapa em memoria. Antes
+  // isto fazia um SELECT + UPDATE POR LINHA das abas (N+1): numa planilha grande
+  // (~800 parceiros x 3 abas) os milhares de queries estouravam o teto de
+  // subrequests do Worker (1000/invocacao) -> 500 cru. Agora e 1 leitura + escrita
+  // em LOTE (db.batch) no fim. O mapa e MUTAVEL: uma linha seguinte enxerga o que a
+  // anterior mudou, preservando o read-after-write do codigo linha-a-linha.
+  const { results } = await db.prepare("SELECT * FROM empresas").all<Row>();
+  const fichas = new Map<number, Row>();
   const porCnpj = new Map<string, number>(), porVsm = new Map<string, number>(), porNome = new Map<string, number>();
   for (const r of results ?? []) {
     const id = Number(r.id);
+    fichas.set(id, { ...r });
     const cn = soDigitos(r.cnpj_norm); if (cn && !porCnpj.has(cn)) porCnpj.set(cn, id);
     const v = normIdVsm(r.id_vsm); if (v && !porVsm.has(v)) porVsm.set(v, id);
     const k = chaveNomeCidade(r.razao_social, r.uf, r.cidade); if (k && !porNome.has(k)) porNome.set(k, id);
@@ -3580,25 +3593,30 @@ async function importarVivensis(db: D1Database, buf: ArrayBuffer): Promise<Resul
   // Update direcionado numa ficha existente. `sobrescreve` = campos autoritativos
   // (valor nao-vazio vence o atual; "" nunca apaga). `lacuna` = so preenche campo
   // vazio. So grava o que muda. Retorna o efeito para a contagem.
-  const aplicar = async (matchData: Row, sobrescreve: Row, lacuna: Row = {}): Promise<"atualizado" | "igual" | "sem_ficha"> => {
+  // Mudancas acumuladas por ficha (id -> campos a gravar): uma unica UPDATE por
+  // ficha no fim, mesmo que varias linhas/abas toquem a mesma loja.
+  const mudancas = new Map<number, Row>();
+  const aplicar = (matchData: Row, sobrescreve: Row, lacuna: Row = {}): "atualizado" | "igual" | "sem_ficha" => {
     const id = acharFicha(matchData);
     if (!id) return "sem_ficha";
-    const atual = await db.prepare("SELECT * FROM empresas WHERE id=?").bind(id).first<Row>();
+    const atual = fichas.get(id);
+    if (!atual) return "sem_ficha";
     const e: Row = {};
     for (const [k, v] of Object.entries(sobrescreve)) {
       if (v === undefined || v === "" || (typeof v === "string" && v.trim() === "")) continue; // vazio nao apaga
-      if (atual && String(atual[k] ?? "") === String(v ?? "")) continue;
+      if (String(atual[k] ?? "") === String(v ?? "")) continue;
       e[k] = v;
     }
     for (const [k, v] of Object.entries(lacuna)) {
       if (v === undefined || String(v).trim() === "") continue;
-      if (atual && !estaVazio(atual[k])) continue; // ja preenchido: nao mexe
-      if (atual && String(atual[k] ?? "") === String(v ?? "")) continue;
+      if (!estaVazio(atual[k])) continue; // ja preenchido: nao mexe
+      if (String(atual[k] ?? "") === String(v ?? "")) continue;
       e[k] = v;
     }
     if (!Object.keys(e).length) return "igual";
     e.atualizado_em = agora();
-    await atualizarEmpresa(db, id, e);
+    Object.assign(atual, e);                                 // reflete no mapa (read-after-write entre linhas)
+    mudancas.set(id, { ...(mudancas.get(id) ?? {}), ...e });  // acumula p/ gravar em lote no fim
     return "atualizado";
   };
   const contar = (ef: "atualizado" | "igual" | "sem_ficha") => {
@@ -3620,7 +3638,7 @@ async function importarVivensis(db: D1Database, buf: ArrayBuffer): Promise<Resul
       };
       const lacuna: Row = { telefone_comercial: telParaArmazenar(String(r["Telefone"] ?? ""), false) };
       const matchData = { id_vsm: r["ID Parceiro"], razao_social: empresa, uf: r["UF"], cidade: r["Município"] };
-      contar(await aplicar(matchData, sobrescreve, lacuna));
+      contar(aplicar(matchData, sobrescreve, lacuna));
     } catch (ex: any) { erros.push(`Capilaridade: ${ex?.message ?? ex}`); }
   }
 
@@ -3634,7 +3652,7 @@ async function importarVivensis(db: D1Database, buf: ArrayBuffer): Promise<Resul
       const motivo = limpar(r["Motivo Reprovação"]);
       const sv = st && motivo ? `${st} — ${motivo}` : st;
       const matchData = { razao_social: razao, uf: r["Estado"], cidade: r["Cidade"] };
-      contar(await aplicar(matchData, { status_vivensis: sv }));
+      contar(aplicar(matchData, { status_vivensis: sv }));
     } catch (ex: any) { erros.push(`Status-wfm: ${ex?.message ?? ex}`); }
   }
 
@@ -3650,8 +3668,25 @@ async function importarVivensis(db: D1Database, buf: ArrayBuffer): Promise<Resul
         telefone_comercial: telParaArmazenar(cel, false),
       };
       const matchData = { cnpj: r["CNPJ"], razao_social: razao, uf: r["Estado"], cidade: r["Cidade"] };
-      contar(await aplicar(matchData, {}, lacuna));
+      contar(aplicar(matchData, {}, lacuna));
     } catch (ex: any) { erros.push(`Instaladoras-wfm: ${ex?.message ?? ex}`); }
+  }
+
+  // Grava as mudancas acumuladas em LOTE (db.batch = 1 subrequest por lote de 50).
+  // Se um lote falhar, cai para uma a uma para nao perder o lote inteiro (mesmo
+  // padrao de inserirEmpresasLote). So aqui se toca o banco para escrever.
+  const ids = [...mudancas.keys()];
+  const TAM = 50;
+  for (let i = 0; i < ids.length; i += TAM) {
+    const lote = ids.slice(i, i + TAM);
+    try {
+      await db.batch(lote.map((id) => stmtAtualizarEmpresa(db, id, mudancas.get(id)!)));
+    } catch {
+      for (const id of lote) {
+        try { await stmtAtualizarEmpresa(db, id, mudancas.get(id)!).run(); }
+        catch (ex: any) { erros.push(`update ${id}: ${ex?.message ?? ex}`); }
+      }
+    }
   }
 
   return { criados: 0, atualizados, mesclados: 0, ignorados, erros };
