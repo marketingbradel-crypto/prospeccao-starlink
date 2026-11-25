@@ -1735,13 +1735,11 @@ const App = (() => {
     const totV = lista.reduce((s, e) => s + prodVendas(e), 0);
     const totI = lista.reduce((s, e) => s + prodInstal(e), 0);
     const media = nP ? (Math.round((totV / nP) * 10) / 10) : 0;
-    const estados = new Set(lista.map(e => (e.uf || "").toUpperCase()).filter(Boolean)).size;
     const stats = [
       ["Parceiros com vendas", nP, ""],
       ["Total de vendas", totV, hexCor("verde")],
       ["Média por parceiro", media, ""],
       ["Antenas instaladas", totI, hexCor("azul")],
-      ["Estados ativos", estados, ""],
     ];
     const el = $("prod-kpis"); if (!el) return;
     el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")
@@ -1942,7 +1940,6 @@ const App = (() => {
     const rows = ord.map((e, i) => `<tr onclick="App.abrirFicha(${e.id})" title="Abrir ficha de ${esc(prodNome(e))}">
         <td class="pt-rk">${i + 1}</td>
         <td class="pt-nome">${esc(prodNome(e))}${e.razao_social && e.razao_social !== prodNome(e) ? `<div class="pt-cnpj">${esc(e.razao_social)}</div>` : ""}</td>
-        <td class="pt-cnpj">${esc(prodFmtCnpj(e.cnpj) || "—")}</td>
         <td>${esc(e.id_vsm || "—")}</td>
         <td>${esc(e.cidade || "—")}</td>
         <td class="pt-uf">${esc((e.uf || "").toUpperCase() || "—")}</td>
@@ -1954,7 +1951,7 @@ const App = (() => {
       <thead><tr>
         <th class="pt-rk">#</th>
         <th>Parceiro / Razão social</th>
-        <th>CNPJ</th><th>ID VSM</th><th>Cidade</th><th>UF</th><th>Consultor</th>
+        <th>ID VSM</th><th>Cidade</th><th>UF</th><th>Consultor</th>
         <th class="pt-num">Instalações</th>
         <th class="pt-num">Vendas</th>
       </tr></thead>
@@ -1965,10 +1962,10 @@ const App = (() => {
   function instExport() {
     const ord = instFiltrados();
     if (!ord.length) { toast("Nada para exportar com os filtros atuais."); return; }
-    const head = ["Parceiro", "Razão social", "CNPJ", "ID VSM", "Cidade", "UF", "Consultor", "Antenas instaladas", "Vendas concluídas"];
+    const head = ["Parceiro", "Razão social", "ID VSM", "Cidade", "UF", "Consultor", "Antenas instaladas", "Vendas concluídas"];
     const cell = (s) => `"${String(s == null ? "" : s).replace(/"/g, '""')}"`;
     const linhas = ord.map(e => [
-      prodNome(e), e.razao_social || "", prodFmtCnpj(e.cnpj), e.id_vsm || "", e.cidade || "", (e.uf || "").toUpperCase(),
+      prodNome(e), e.razao_social || "", e.id_vsm || "", e.cidade || "", (e.uf || "").toUpperCase(),
       e.responsavel || "", prodInstal(e), prodVendas(e),
     ].map(cell).join(";"));
     const csv = "﻿" + [head.map(cell).join(";"), ...linhas].join("\r\n");
