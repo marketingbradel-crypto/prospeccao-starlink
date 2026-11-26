@@ -1710,8 +1710,11 @@ const App = (() => {
 
   function prodSort(key) { prodSortKey = key; prodAplicar(); }
 
-  function prodFiltrados() {
-    return PROD.filter(e => {
+  // Aplica os filtros do ranking (estado/cidade/consultor/busca) a QUALQUER lista —
+  // usado tanto nos parceiros produtivos (PROD) quanto nos instaladores sem venda
+  // (INST), para o card "Antenas instaladas" somar a base inteira sob o mesmo recorte.
+  function aplicarFiltrosProd(lista) {
+    return lista.filter(e => {
       if (prodF.uf && (e.uf || "").toUpperCase() !== prodF.uf) return false;
       if (prodF.cidade && (e.cidade || "").trim() !== prodF.cidade) return false;
       if (prodF.cons && (e.responsavel || "") !== prodF.cons) return false;
@@ -1722,6 +1725,7 @@ const App = (() => {
       return true;
     });
   }
+  function prodFiltrados() { return aplicarFiltrosProd(PROD); }
 
   function prodAplicar() {
     const lista = prodFiltrados();
@@ -1733,16 +1737,33 @@ const App = (() => {
   function prodRenderKPIs(lista) {
     const nP = lista.length;
     const totV = lista.reduce((s, e) => s + prodVendas(e), 0);
-    const totI = lista.reduce((s, e) => s + prodInstal(e), 0);
     const media = nP ? (Math.round((totV / nP) * 10) / 10) : 0;
+    // "Antenas instaladas" = TODAS as instalações da base (VSM), não só as de quem
+    // vendeu. Soma dois grupos sob o mesmo filtro, sem dupla contagem (dedupe por id):
+    //   instVend = instalações dos parceiros que venderam (ja_vendeu=1)
+    //   instSemV = instalações de instaladores SEM venda própria (antena, zero venda)
+    // Sem filtro: 1.331 (venderam) + 621 (sem venda) = 1.952 na base inteira.
+    const instVend = lista.reduce((s, e) => s + prodInstal(e), 0);
+    const vistos = new Set(lista.map(e => e.id));
+    const instSemV = aplicarFiltrosProd(INST)
+      .filter(e => !vistos.has(e.id))
+      .reduce((s, e) => s + prodInstal(e), 0);
+    const totI = instVend + instSemV;
     const stats = [
       ["Parceiros com vendas", nP, ""],
       ["Total de vendas", totV, hexCor("verde")],
       ["Média por parceiro", media, ""],
-      ["Antenas instaladas", totI, hexCor("azul")],
     ];
     const el = $("prod-kpis"); if (!el) return;
+    const subInst = instSemV > 0
+      ? `<div class="stat-sub" title="Antenas instaladas por parceiros que ainda não têm nenhuma venda concluída (VSM) — contadas aqui, mas fora do ranking de vendas.">${instSemV} de instaladores sem venda própria</div>`
+      : "";
+    const cardInst = `<div class="stat" title="Total de antenas instaladas (VSM) na base inteira: ${instVend} de parceiros que venderam + ${instSemV} de instaladores sem venda própria.">
+      <div class="v" style="color:${hexCor("azul")}">${totI}</div>
+      <div class="l">Antenas instaladas</div>${subInst}
+    </div>`;
     el.innerHTML = stats.map(s => `<div class="stat"><div class="v"${s[2] ? ` style="color:${s[2]}"` : ""}>${s[1]}</div><div class="l">${esc(s[0])}</div></div>`).join("")
+      + cardInst
       + prodInstKpiHTML()
       + prodPodiumHTML(lista);
   }
