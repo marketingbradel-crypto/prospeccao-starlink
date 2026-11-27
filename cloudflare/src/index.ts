@@ -73,6 +73,19 @@ const CAMPOS_CADASTRAIS_PLANILHA = new Set([
   "qtd_filiais", "capacidade_vendas_mes",
 ]);
 
+// Campos COMERCIAIS (estado do funil + follow-up). NAO sao cadastrais. Numa FUSAO
+// de duplicatas, o lado comercialmente MAIS AVANCADO (maior rank de status) dita
+// esses campos EM BLOCO — senao o mestre do Formulario, que nasce em "Aguardando
+// contato" com responsavel so por territorio, apagaria o progresso real da ficha
+// absorvida (status/consultor/proxima acao/datas) e ela "sumia" do Follow-up
+// (filtrado por responsavel+status). Empate de rank mantem o mestre (so lacuna).
+const CAMPOS_COMERCIAIS = new Set([
+  "status", "prioridade", "etapa", "motivo_perda", "faixa_potencial", "responsavel",
+  "proxima_acao", "proxima_acao_data", "data_ultimo_contato", "data_primeiro_contato",
+  "data_apresentacao", "data_interesse", "data_cadastro", "data_inicio_cred", "data_cred",
+  "data_primeira_venda", "data_ultima_venda", "data_lead", "ativacoes_mes", "ativacoes_acum",
+]);
+
 type Row = Record<string, any>;
 
 // --------------------------------------------------------------------------
@@ -322,6 +335,17 @@ const estaVazio = (v: any): boolean =>
 function normIdVsm(s: any): string {
   const m = String(s ?? "").trim().match(/^\d+/);
   return m ? m[0] : "";
+}
+
+// Rank do status no funil para decidir "mais avancado" numa fusao: as 7 etapas
+// positivas em ordem (Aguardando contato=1 ... Pronto para venda=7); as duas
+// saidas (Nao interessado / Sem retorno) ficam em 1.5 — um toque humano que vence
+// o default "Aguardando contato" mas perde para progresso positivo real
+// (Em atendimento em diante). Status desconhecido/vazio = 0.
+function rankStatusComercial(s: any): number {
+  const i = L.STATUS.indexOf(String(s ?? "").trim());
+  if (i < 0) return 0;
+  return i <= 6 ? i + 1 : 1.5;
 }
 
 // Normaliza qualquer texto livre de origem para o vocabulario canonico do app
@@ -3291,6 +3315,11 @@ async function fundirEmpresas(c: any, masterId: number, victimId: number): Promi
   const victimEhVSM = String(victim.origem_contato ?? "") === "VSM" || !!normIdVsm(victim.id_vsm);
   const masterEhForm = String(master.origem_contato ?? "") === "Formulário" || !normIdVsm(master.id_vsm);
   const vsmPromove = victimEhVSM && masterEhForm;
+  // Quem esta comercialmente MAIS AVANCADO dita o estado do funil. So dominancia
+  // ESTRITA inverte (empate mantem o mestre). Evita que o mestre do Formulario,
+  // que nasce "Aguardando contato", rebaixe um "Parceiro"/"Preencher o VSM" da
+  // ficha absorvida — a causa de fichas sumirem do Follow-up.
+  const vitimaDominaComercial = rankStatusComercial(victim.status) > rankStatusComercial(master.status);
   const PULAR = new Set(["id", "codigo", "criado_em", "atualizado_em", "cnpj_norm"]);
 
   const e: Row = {};
@@ -3306,6 +3335,19 @@ async function fundirEmpresas(c: any, masterId: number, victimId: number): Promi
       const mo = String(master.observacoes ?? "").trim(), vo = String(vv).trim();
       if (mo && vo && mo !== vo) e.observacoes = `${mo}\n— (conciliado da ficha ${victimId}) —\n${vo}`;
       else if (!mo && vo) e.observacoes = vo;
+      continue;
+    }
+    // "Ja vendeu" e um FATO: se qualquer lado vendeu, o resultado vendeu.
+    if (k === "ja_vendeu") {
+      if (toBoolInt(vv) && !toBoolInt(master[k])) e[k] = 1;
+      continue;
+    }
+    // Campo COMERCIAL: o lado mais avancado vence a divergencia; sem dominancia,
+    // nao-destrutivo (so preenche lacuna do mestre).
+    if (CAMPOS_COMERCIAIS.has(k)) {
+      if (vitimaDominaComercial) {
+        if (String(master[k] ?? "") !== String(vv ?? "")) e[k] = vv;
+      } else if (estaVazio(master[k])) e[k] = vv;
       continue;
     }
     // Campo CADASTRAL e o absorvido e VSM promovendo um form: VSM vence divergencia.
