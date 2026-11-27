@@ -29,6 +29,7 @@ const App = (() => {
   let fuPend = "";         // filtro de pendência VSM: "" todas, "treinar", "contrato", "sem"
   let fuCnpj = "";         // filtro por CNPJ (aceita com ou sem pontuação; match por dígitos)
   let fuIdVsm = "";        // filtro por ID VSM (identificador exato)
+  let fuRev = "";          // filtro por código REV (aceita "452", "rev-452", "REV452")
   let fuBusca = "";        // busca por nome da empresa no follow-up ("" = sem filtro)
   let ME = null;           // usuário logado (/api/me): { username, admin, must_change, responsavel }
   let MODAL_FECHAVEL = true; // o modal atual pode ser fechado? (1º acesso = não)
@@ -97,6 +98,7 @@ const App = (() => {
     if ("busca" in fu) fuBusca = fu.busca || "";
     if ("cnpj" in fu) fuCnpj = fu.cnpj || "";
     if ("idvsm" in fu) fuIdVsm = fu.idvsm || "";
+    if ("rev" in fu) fuRev = fu.rev || "";
     const g = st.gerencial || {};
     if (g.periodo) gerPeriodo = g.periodo;
     if ("inicio" in g) gerInicio = g.inicio || "";
@@ -123,7 +125,7 @@ const App = (() => {
     const st = {
       tab: navTab,
       mapa: { q: qs(), metric: apMetric },
-      followup: { resp: fuResp, uf: fuUF, status: fuStatus, origem: fuOrigem, vendeu: fuVendeu, faixa: fuFaixa, pend: fuPend, busca: fuBusca, cnpj: fuCnpj, idvsm: fuIdVsm },
+      followup: { resp: fuResp, uf: fuUF, status: fuStatus, origem: fuOrigem, vendeu: fuVendeu, faixa: fuFaixa, pend: fuPend, busca: fuBusca, cnpj: fuCnpj, idvsm: fuIdVsm, rev: fuRev },
       gerencial: { periodo: gerPeriodo, inicio: gerInicio, fim: gerFim },
     };
     try { localStorage.setItem(NAV_LS, JSON.stringify(st)); } catch (e) { /* storage cheio/privado */ }
@@ -2345,6 +2347,11 @@ const App = (() => {
     renderFollowUpRows();
     navSalvar();
   }
+  function fuBuscarRev(v) {
+    fuRev = v || "";
+    renderFollowUpRows();
+    navSalvar();
+  }
 
   function renderFollowUp() {
     const box = $("fu-body");
@@ -2403,6 +2410,10 @@ const App = (() => {
           <input id="fu-idvsm" type="search" placeholder="Identificador"
                  value="${esc(fuIdVsm)}" oninput="App.fuBuscarIdVsm(this.value)" autocomplete="off">
         </label>
+        <label class="fu-filtro">Código REV
+          <input id="fu-rev" type="search" placeholder="Ex.: 452 ou REV-452"
+                 value="${esc(fuRev)}" oninput="App.fuBuscarRev(this.value)" autocomplete="off">
+        </label>
       </div>`;
   }
 
@@ -2443,6 +2454,13 @@ const App = (() => {
       if (fuIdVsm) {
         // ID VSM: identificador exato (sem diferenciar maiúsculas/espaços nas pontas).
         if (String(x.id_vsm || "").trim().toLowerCase() !== fuIdVsm.trim().toLowerCase()) return false;
+      }
+      if (fuRev) {
+        // Código REV: casa por trecho ignorando pontuação e o prefixo, então
+        // "452", "rev-452" e "REV452" todos encontram "REV-452".
+        const alvo = String(x.codigo || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const q = fuRev.toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (!q || !alvo.includes(q)) return false;
       }
       return true;
     };
@@ -3630,7 +3648,7 @@ const App = (() => {
     apMetrica, apSelUF,
     exportar, modelo, abrirImport, fazerImport,
     pUfMudou, sugProspec, sugProspecSocial, buscarProspec, salvarProspec, salvarTodosProspec,
-    varreduraAgora, fuFiltrar, fuBuscar, fuBuscarCnpj, fuBuscarIdVsm,
+    varreduraAgora, fuFiltrar, fuBuscar, fuBuscarCnpj, fuBuscarIdVsm, fuBuscarRev,
     salvarPendente, descartarPendente, salvarTodosPendentes, descartarTodosPendentes, filtrarPendentes,
     renderHist, abrirPesquisa, repesquisar, excluirPesquisa,
     navToggle,

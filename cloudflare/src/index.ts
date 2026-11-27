@@ -2152,7 +2152,7 @@ app.get("/api/follow-up", async (c) => {
   // (e logins "geral") veem tudo. Trava no backend: nao basta filtrar na tela.
   const carteira = await carteiraDoFiltro(c, c.get("usuario"));
   const sql =
-    `SELECT id, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
+    `SELECT id, codigo, nome_fantasia, razao_social, cidade, uf, status, responsavel, prioridade,
             telefone_comercial, whatsapp, proxima_acao, proxima_acao_data,
             data_ultimo_contato, faixa_potencial, origem_contato, cnpj, id_vsm,
             pendencia_vsm, pendencia_cadastro, pendencia_cadastro_obs,
@@ -2167,7 +2167,7 @@ app.get("/api/follow-up", async (c) => {
     const nome = r.nome_fantasia || r.razao_social || "(sem nome)";
     const pad = String(r.proxima_acao_data || "").slice(0, 10);
     const base: Row = {
-      id: r.id, nome, razao_social: r.razao_social || "", cidade: r.cidade, uf: r.uf, status: r.status,
+      id: r.id, codigo: r.codigo || "", nome, razao_social: r.razao_social || "", cidade: r.cidade, uf: r.uf, status: r.status,
       responsavel: r.responsavel, prioridade: r.prioridade,
       telefone: r.telefone_comercial || "", whatsapp: r.whatsapp || "",
       proxima_acao: r.proxima_acao || "", proxima_acao_data: pad,
